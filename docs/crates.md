@@ -17,7 +17,6 @@ yatui/
     yatui-runtime/
     yatui-widgets/
     yatui-test/
-    yatui-macros/
 ```
 
 Crate boundaries represent ownership and dependency boundaries, not just file
@@ -30,17 +29,15 @@ boundary.
 `A -> B` means that crate A directly depends on crate B.
 
 ```text
-yatui-text              -> yatui-core
 yatui-render            -> yatui-core, yatui-text
 yatui-layout            -> yatui-core
-yatui-terminal          -> yatui-core, yatui-render
-yatui-backend-crossterm -> yatui-terminal
+yatui-terminal          -> yatui-core, yatui-render, yatui-text
+yatui-backend-crossterm -> yatui-core, yatui-render, yatui-terminal
 yatui-ui                -> yatui-core, yatui-text, yatui-render, yatui-layout
 yatui-widgets           -> yatui-core, yatui-text, yatui-layout, yatui-ui
 yatui-runtime           -> yatui-core, yatui-ui, yatui-render, yatui-terminal
 yatui-test              -> yatui-core, yatui-text, yatui-ui, yatui-render,
                            yatui-terminal, yatui-runtime
-yatui-macros            -> proc-macro implementation dependencies only
 yatui                    -> selected public crates
 ```
 
@@ -240,12 +237,6 @@ frame
 Internal unit tests remain in their owning crates. `yatui-test` is a public
 headless harness, not a central location for all repository tests.
 
-### `yatui-macros`
-
-Contains optional procedural macros after the manual API is stable. Macro
-expansions must use public APIs and must not rely on private runtime internals.
-No core crate depends on this crate.
-
 ### `yatui`
 
 The facade crate used by most applications. It contains minimal implementation
@@ -306,17 +297,19 @@ yatui-core = { path = "crates/yatui-core", version = "=0.1.0" }
 yatui-text = { path = "crates/yatui-text", version = "=0.1.0" }
 ```
 
+Patch releases within a `0.y` line contain compatible additions and fixes.
+Breaking API changes or an MSRV increase require the next `0.(y+1).0` release.
+All releases use one `vX.Y.Z` tag and include compatibility notes. The MSRV is
+Rust 1.85.0 and is tested directly; it may increase only in a breaking release.
+
 Publish in topological dependency order:
 
-1. `yatui-core`
-2. `yatui-text` and `yatui-layout`
-3. `yatui-render`
-4. `yatui-terminal`
-5. Terminal backends
-6. `yatui-ui`
-7. `yatui-runtime` and `yatui-widgets`
-8. `yatui-test` and `yatui-macros`
-9. `yatui`
+1. `yatui-core` and `yatui-text`
+2. `yatui-layout` and `yatui-render`
+3. `yatui-terminal` and `yatui-ui`
+4. `yatui-backend-crossterm`, `yatui-runtime`, and `yatui-widgets`
+5. `yatui-test`
+6. `yatui`
 
 ## Boundary Review Checklist
 

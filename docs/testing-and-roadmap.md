@@ -104,6 +104,16 @@ Fuzz targets include:
 
 Fuzz regressions become permanent named tests.
 
+The initial `cargo-fuzz` suite is isolated in `fuzz/` and currently includes:
+
+- `text_edit_sequences` for bounded Unicode edit, movement, and selection
+  sequences
+- `render_transactions` for patch replay, commit, discard, resize, clipping,
+  invalidation, and width-policy changes
+
+Intentional corpus seeds are checked in. Pull requests, main-branch changes,
+and a weekly schedule run the targets with a pinned nightly toolchain.
+
 ## Headless Test API
 
 `yatui-test` exposes an application-level harness:
@@ -164,6 +174,11 @@ Target environments:
 Not every emulator needs to run on every change. A smaller gating matrix and a
 larger scheduled compatibility matrix are acceptable.
 
+The gating matrix runs the process-isolated Crossterm lifecycle test on Linux
+PTY, macOS PTY, and Windows ConPTY. Linux additionally verifies exact termios
+restoration. Emulator semantics, tmux, Unix job-control signals, and termination
+signals remain explicit stabilization follow-ups.
+
 ## Benchmarks
 
 Benchmark fixtures should represent applications, not only isolated loops.
@@ -196,6 +211,10 @@ Benchmark fixtures should represent applications, not only isolated loops.
 Microbenchmarks for grapheme segmentation, text measurement, cell comparison,
 and ANSI serialization remain useful, but they do not substitute for these
 end-to-end scenarios.
+
+The initial Criterion baseline measures Unicode text under every width policy
+and 80 by 24 one-cell and full-repaint frame preparation. Deterministic tests
+gate patch shape, while scheduled CI retains statistical reports as artifacts.
 
 ## Implementation Milestones
 
@@ -321,6 +340,13 @@ Exit criterion: a downstream application can depend only on `yatui` and test
 with `yatui-test` without importing backend implementation details.
 
 ### Milestone 8: Stabilization
+
+Status: initial stabilization implemented. Terminal lifecycle failure recovery,
+cross-platform PTY CI, bounded fuzz targets, benchmark baselines, package
+contents, compatibility policy, and coordinated Cargo 1.90 release automation
+are in place. Unix job-control integration and emulator-specific behavior
+remain follow-ups. The first crates.io release is blocked until ownership of the
+unrelated existing `yatui` package is resolved or the package family is renamed.
 
 Deliver:
 

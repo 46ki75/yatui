@@ -58,14 +58,17 @@ test.
 
 ## Design
 
-Start with the [design document index](docs/README.md). The design covers:
+Start with the
+[design document index](https://github.com/46ki75/yatui/blob/main/docs/README.md).
+The design covers:
 
-- [Architecture and ownership](docs/architecture.md)
-- [Workspace crate boundaries](docs/crates.md)
-- [Rendering and Unicode text](docs/rendering-and-text.md)
-- [UI and runtime behavior](docs/ui-and-runtime.md)
-- [Terminal lifecycle](docs/terminal.md)
-- [Testing and implementation roadmap](docs/testing-and-roadmap.md)
+- [Architecture and ownership](https://github.com/46ki75/yatui/blob/main/docs/architecture.md)
+- [Workspace crate boundaries](https://github.com/46ki75/yatui/blob/main/docs/crates.md)
+- [Rendering and Unicode text](https://github.com/46ki75/yatui/blob/main/docs/rendering-and-text.md)
+- [UI and runtime behavior](https://github.com/46ki75/yatui/blob/main/docs/ui-and-runtime.md)
+- [Terminal lifecycle](https://github.com/46ki75/yatui/blob/main/docs/terminal.md)
+- [Compatibility](https://github.com/46ki75/yatui/blob/main/docs/compatibility.md)
+- [Testing and implementation roadmap](https://github.com/46ki75/yatui/blob/main/docs/testing-and-roadmap.md)
 
 ## Development
 
@@ -80,5 +83,7 @@ The workspace MSRV is Rust 1.85.0 and is pinned in `rust-toolchain.toml`.
 
 ## License
 
-Licensed under either the [Apache License, Version 2.0](LICENSE-APACHE) or the
-[MIT license](LICENSE-MIT), at your option.
+Licensed under either the
+[Apache License, Version 2.0](https://github.com/46ki75/yatui/blob/main/LICENSE-APACHE)
+or the [MIT license](https://github.com/46ki75/yatui/blob/main/LICENSE-MIT), at
+your option.

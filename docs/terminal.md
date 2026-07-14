@@ -223,7 +223,7 @@ may have changed any terminal cell or mode.
 
 ## Signals And Process Lifecycle
 
-On Unix, job-control behavior is part of the terminal contract:
+Unix job-control integration is not implemented yet. The target contract is:
 
 - `SIGTSTP` follows the suspend sequence before stopping.
 - `SIGCONT` follows the resume sequence after continuing.
@@ -251,5 +251,7 @@ The adapter owns:
 - ANSI or Crossterm output selection
 - Backend-specific error mapping
 
-Crossterm types do not escape the crate. Known global-reader restrictions are
-documented, and the backend prevents unsupported concurrent event readers.
+Crossterm types do not escape the crate. Raw mode and event reading are
+process-global; applications must enforce a single active local event reader.
+See [Compatibility](compatibility.md) for the tested lifecycle boundary and
+known restoration limitations.

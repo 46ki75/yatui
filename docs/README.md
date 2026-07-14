@@ -17,6 +17,8 @@ built.
 | [Rendering and Text](rendering-and-text.md) | Unicode, cells, surfaces, frame construction, and diffing |
 | [UI and Runtime](ui-and-runtime.md) | Application model, retained identity, events, focus, commands, and scheduling |
 | [Terminal](terminal.md) | Backends, capabilities, terminal state, output, and lifecycle |
+| [Compatibility](compatibility.md) | Tested platforms, terminal limitations, SemVer, and MSRV policy |
+| [Releasing](releasing.md) | Package verification, release checklist, and publishing gate |
 | [Testing and Roadmap](testing-and-roadmap.md) | Verification strategy, benchmarks, milestones, and release criteria |
 
 ## Recommended Reading Order

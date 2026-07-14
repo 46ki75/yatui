@@ -62,6 +62,7 @@ impl<W: Write + Send> CrosstermBackend<W> {
 
     fn effective_state(&self, desired: &TerminalState) -> TerminalState {
         let mut effective = desired.clone();
+        effective.raw_mode |= self.original_raw_mode;
         if self.capabilities.mouse == MouseCapability::None {
             effective.mouse = MouseMode::Disabled;
         }
@@ -229,11 +230,14 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             Ok(())
         };
 
-        self.active = TerminalState {
-            raw_mode: self.original_raw_mode,
-            ..TerminalState::default()
-        };
-        output_result.and(raw_result)
+        let result = output_result.and(raw_result);
+        if result.is_ok() {
+            self.active = TerminalState {
+                raw_mode: self.original_raw_mode,
+                ..TerminalState::default()
+            };
+        }
+        result
     }
 }
 
@@ -258,6 +262,8 @@ fn detect_capabilities() -> Capabilities {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use yatui_core::{Point, Style};
     use yatui_render::Renderer;
     use yatui_text::WidthPolicy;
@@ -317,5 +323,63 @@ mod tests {
         assert!(output.windows(8).any(|window| window == b"\x1b[?2004h"));
         assert!(output.windows(8).any(|window| window == b"\x1b[?2004l"));
         Ok(())
+    }
+
+    #[derive(Default)]
+    struct FailFlushOnce {
+        bytes: Vec<u8>,
+        flushes: usize,
+        fail_on_flush: usize,
+    }
+
+    impl Write for FailFlushOnce {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            if self.flushes == self.fail_on_flush {
+                return Err(io::Error::other("injected flush failure"));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn failed_restore_keeps_active_state_for_retry() -> io::Result<()> {
+        let writer = FailFlushOnce {
+            fail_on_flush: 2,
+            ..FailFlushOnce::default()
+        };
+        let mut backend = CrosstermBackend::new(writer)?;
+        let desired = TerminalState {
+            screen: ScreenMode::Alternate,
+            cursor: CursorState::HIDDEN,
+            ..TerminalState::default()
+        };
+        backend.apply_state(&desired)?;
+
+        assert!(backend.restore().is_err());
+        assert_eq!(backend.active.screen, ScreenMode::Alternate);
+        backend.restore()?;
+        assert_eq!(backend.active, TerminalState::default());
+        Ok(())
+    }
+
+    #[test]
+    fn effective_state_preserves_preexisting_raw_mode() {
+        let backend = CrosstermBackend {
+            writer: Vec::new(),
+            capabilities: Capabilities::default(),
+            active: TerminalState {
+                raw_mode: true,
+                ..TerminalState::default()
+            },
+            original_raw_mode: true,
+        };
+
+        assert!(backend.effective_state(&TerminalState::default()).raw_mode);
     }
 }

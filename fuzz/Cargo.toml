@@ -1,0 +1,32 @@
+[package]
+name = "yatui-fuzz"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+unicode-segmentation = "=1.13.3"
+yatui-core = { path = "../crates/yatui-core" }
+yatui-render = { path = "../crates/yatui-render" }
+yatui-text = { path = "../crates/yatui-text" }
+
+[workspace]
+
+[[bin]]
+name = "text_edit_sequences"
+path = "fuzz_targets/text_edit_sequences.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "render_transactions"
+path = "fuzz_targets/render_transactions.rs"
+test = false
+doc = false
+bench = false

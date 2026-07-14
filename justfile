@@ -16,6 +16,9 @@ lint:
 test:
     cargo test --workspace --all-features
 
+test-pty:
+    cargo test -p yatui-backend-crossterm --test pty_lifecycle -- --ignored --test-threads=1
+
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
@@ -32,3 +35,15 @@ coverage-html: test-cov
 
 coverage-ci: test-cov
     cargo llvm-cov report --lcov --output-path lcov.info
+
+bench-smoke:
+    cargo test -p yatui --bench stabilization --all-features
+
+bench:
+    cargo bench -p yatui --bench stabilization --all-features -- --noplot
+
+package-check:
+    bash scripts/check-package-contents.sh
+
+publish-dry-run:
+    bash scripts/publish.sh --dry-run

@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+publish = ["crates-io"]
 authors = ["Ikuma Yamashita <me@ikuma.cloud>"]
 repository = "https://github.com/46ki75/yatui"
 homepage = "https://github.com/46ki75/yatui"
@@ -15,6 +16,7 @@ categories = ["command-line-interface"]
 keywords = ["terminal", "tui", "cli", "ui"]
 
 [workspace.dependencies]
+criterion = { version = "=0.7.0", default-features = false }
 yatui-core = { path = "crates/yatui-core", version = "=0.1.0" }
 yatui-backend-crossterm = { path = "crates/yatui-backend-crossterm", version = "=0.1.0" }
 yatui-render = { path = "crates/yatui-render", version = "=0.1.0" }

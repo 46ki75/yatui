@@ -14,6 +14,7 @@ pub struct TerminalSession<B: TerminalBackend> {
     backend: B,
     desired: TerminalState,
     suspended: bool,
+    cleanup_required: bool,
     full_repaint_required: bool,
 }
 
@@ -28,6 +29,7 @@ impl<B: TerminalBackend> TerminalSession<B> {
             backend,
             desired,
             suspended: false,
+            cleanup_required: false,
             full_repaint_required: true,
         })
     }
@@ -77,10 +79,15 @@ impl<B: TerminalBackend> TerminalSession<B> {
     /// Restores terminal modes temporarily for a child process or shell.
     pub fn suspend(&mut self) -> Result<(), B::Error> {
         if self.suspended {
+            if self.cleanup_required {
+                self.backend.restore()?;
+                self.cleanup_required = false;
+            }
             return Ok(());
         }
         self.backend.restore()?;
         self.suspended = true;
+        self.cleanup_required = false;
         self.full_repaint_required = true;
         Ok(())
     }
@@ -90,8 +97,13 @@ impl<B: TerminalBackend> TerminalSession<B> {
         if !self.suspended {
             return Ok(());
         }
-        self.backend.apply_state(&self.desired)?;
+        if let Err(error) = self.backend.apply_state(&self.desired) {
+            self.cleanup_required = self.backend.restore().is_err();
+            self.full_repaint_required = true;
+            return Err(error);
+        }
         self.suspended = false;
+        self.cleanup_required = false;
         self.full_repaint_required = true;
         Ok(())
     }
@@ -103,11 +115,12 @@ impl<B: TerminalBackend> TerminalSession<B> {
 
     /// Explicitly restores the terminal.
     pub fn restore(&mut self) -> Result<(), B::Error> {
-        if self.suspended {
+        if self.suspended && !self.cleanup_required {
             return Ok(());
         }
         self.backend.restore()?;
         self.suspended = true;
+        self.cleanup_required = false;
         self.full_repaint_required = true;
         Ok(())
     }
@@ -115,7 +128,7 @@ impl<B: TerminalBackend> TerminalSession<B> {
     /// Returns whether terminal modes are currently restored.
     #[must_use]
     pub const fn is_suspended(&self) -> bool {
-        self.suspended
+        self.suspended && !self.cleanup_required
     }
 
     /// Returns a shared reference to the backend.
@@ -132,7 +145,7 @@ impl<B: TerminalBackend> TerminalSession<B> {
 
 impl<B: TerminalBackend> Drop for TerminalSession<B> {
     fn drop(&mut self) {
-        if !self.suspended {
+        if !self.suspended || self.cleanup_required {
             let _ = self.backend.restore();
         }
     }
@@ -140,7 +153,7 @@ impl<B: TerminalBackend> Drop for TerminalSession<B> {
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, sync::Arc};
+    use std::{convert::Infallible, io, sync::Arc};
 
     use super::*;
     use crate::Capabilities;
@@ -224,6 +237,160 @@ mod tests {
             2
         );
         assert_eq!(counts.writes.load(std::sync::atomic::Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[derive(Clone, Default)]
+    struct FailurePlan {
+        applied: Arc<std::sync::atomic::AtomicUsize>,
+        restored: Arc<std::sync::atomic::AtomicUsize>,
+        fail_apply_on: usize,
+        fail_restore_on: usize,
+    }
+
+    struct FailingBackend {
+        capabilities: Capabilities,
+        plan: FailurePlan,
+    }
+
+    impl TerminalBackend for FailingBackend {
+        type Error = io::Error;
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            Ok(Size::new(80, 24))
+        }
+
+        fn capabilities(&self) -> &Capabilities {
+            &self.capabilities
+        }
+
+        fn poll_event(&mut self, _timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
+            Ok(None)
+        }
+
+        fn apply_state(&mut self, _desired: &TerminalState) -> Result<(), Self::Error> {
+            let call = self
+                .plan
+                .applied
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            if call == self.plan.fail_apply_on {
+                return Err(io::Error::other("injected apply failure"));
+            }
+            Ok(())
+        }
+
+        fn write_patch(&mut self, _patch: &FramePatch) -> Result<WriteOutcome, Self::Error> {
+            Ok(WriteOutcome::Applied)
+        }
+
+        fn restore(&mut self) -> Result<(), Self::Error> {
+            let call = self
+                .plan
+                .restored
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            if call == self.plan.fail_restore_on {
+                return Err(io::Error::other("injected restore failure"));
+            }
+            Ok(())
+        }
+    }
+
+    fn failing_backend(plan: FailurePlan) -> FailingBackend {
+        FailingBackend {
+            capabilities: Capabilities::default(),
+            plan,
+        }
+    }
+
+    #[test]
+    fn open_failure_attempts_restoration() {
+        let plan = FailurePlan {
+            fail_apply_on: 1,
+            ..FailurePlan::default()
+        };
+
+        assert!(
+            TerminalSession::open(failing_backend(plan.clone()), TerminalState::fullscreen())
+                .is_err()
+        );
+        assert_eq!(plan.restored.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn failed_resume_restores_partial_state() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_apply_on: 2,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan.clone()), TerminalState::fullscreen())?;
+        session.suspend()?;
+
+        assert!(session.resume().is_err());
+        assert!(session.is_suspended());
+        assert!(session.take_full_repaint_required());
+        drop(session);
+
+        assert_eq!(plan.restored.load(std::sync::atomic::Ordering::Relaxed), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn drop_retries_cleanup_after_failed_resume_and_restore() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_apply_on: 2,
+            fail_restore_on: 2,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan.clone()), TerminalState::fullscreen())?;
+        session.suspend()?;
+
+        assert!(session.resume().is_err());
+        assert!(!session.is_suspended());
+        drop(session);
+
+        assert_eq!(plan.restored.load(std::sync::atomic::Ordering::Relaxed), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn resume_retries_activation_after_failed_cleanup() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_apply_on: 2,
+            fail_restore_on: 2,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan.clone()), TerminalState::fullscreen())?;
+        session.suspend()?;
+
+        assert!(session.resume().is_err());
+        assert!(!session.is_suspended());
+        session.resume()?;
+        drop(session);
+
+        assert_eq!(plan.applied.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert_eq!(plan.restored.load(std::sync::atomic::Ordering::Relaxed), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn drop_retries_failed_explicit_restore() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_restore_on: 1,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan.clone()), TerminalState::fullscreen())?;
+
+        assert!(session.restore().is_err());
+        assert!(!session.is_suspended());
+        drop(session);
+
+        assert_eq!(plan.restored.load(std::sync::atomic::Ordering::Relaxed), 2);
         Ok(())
     }
 }
