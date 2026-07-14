@@ -1,0 +1,299 @@
+# UI And Runtime
+
+## Application Model
+
+The primary API follows model-update-view:
+
+```rust
+pub trait Application {
+    type Message: Send + 'static;
+
+    fn update(
+        &mut self,
+        message: Self::Message,
+        context: &mut UpdateContext<Self::Message>,
+    ) -> Command<Self::Message>;
+
+    fn view(&self) -> Element<'_, Self::Message>;
+}
+```
+
+Application state has one owner. Terminal events, widget actions, timers, and
+completed futures all become messages processed by `update`.
+
+An intended usage shape is:
+
+```rust
+struct Counter {
+    count: usize,
+}
+
+enum Message {
+    Increment,
+    Quit,
+}
+
+impl Application for Counter {
+    type Message = Message;
+
+    fn update(
+        &mut self,
+        message: Message,
+        _context: &mut UpdateContext<Message>,
+    ) -> Command<Message> {
+        match message {
+            Message::Increment => self.count += 1,
+            Message::Quit => return Command::quit(),
+        }
+
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        column((
+            text(format_args!("Count: {}", self.count)),
+            button("Increment").on_press(Message::Increment),
+        ))
+    }
+}
+```
+
+The example expresses the desired ergonomics, not a finalized constructor API.
+
+## Ephemeral Elements
+
+`Element<'a, Message>` is a frame-local declaration. It may borrow text and
+collections from the model. Elements contain enough information to reconcile
+identity, measure, paint, and route a current event.
+
+Borrowed values are never stored in the retained tree. Event bindings are
+consumed during synchronous event dispatch. The runtime obtains a fresh view
+for a later event.
+
+This avoids the unsafe lifetime extension required by some retained Rust UI
+frameworks while allowing applications to avoid unnecessary cloning.
+
+## Retained Tree
+
+```rust
+pub struct RetainedNode {
+    key: Key,
+    kind: WidgetKind,
+    parent: Option<NodeId>,
+    children: Vec<NodeId>,
+    layout: Rect,
+    focus: FocusMetadata,
+    interaction: InteractionState,
+    invalidation: Invalidation,
+}
+```
+
+The retained tree provides stable identity for:
+
+- Reconciliation
+- Focus
+- Mouse capture
+- Hover transitions
+- Scroll and selection metadata
+- Layout caching
+- Paint invalidation
+- Component-scoped tasks in a future extension
+
+The tree does not own the application model or terminal session.
+
+## Keys And Reconciliation
+
+Static children may use structural position for identity. Dynamic collections
+must use explicit keys.
+
+```rust
+list(items.iter().map(|item| {
+    row_for(item).key(item.id)
+}))
+```
+
+A node is reused only when its key and widget kind are compatible. Replacing a
+node clears incompatible retained interaction state and repairs focus.
+
+Duplicate sibling keys are errors in debug builds and should produce a clear
+diagnostic in release builds.
+
+## Widget Contract
+
+The exact trait split will be prototyped, but widgets need four capabilities:
+
+```rust
+pub trait Widget<Message> {
+    fn layout(&self, context: &mut LayoutContext<'_>) -> LayoutNode;
+
+    fn paint(&self, context: &mut PaintContext<'_>);
+
+    fn event(
+        &self,
+        event: &UiEvent,
+        context: &mut EventContext<'_, Message>,
+    );
+
+    fn accessibility(&self, context: &mut AccessibilityContext<'_>);
+}
+```
+
+Accessibility may initially be minimal, but reserving a semantic output path
+prevents visual cells from becoming the only representation of the interface.
+
+Widgets are controlled by default:
+
+```rust
+text_input(&model.query)
+    .on_change(Message::QueryChanged)
+    .on_submit(Message::Submit)
+```
+
+The actual mapping API must support messages containing event data without
+requiring hidden mutation of the application model.
+
+## Event Routing
+
+Terminal events are normalized before entering the UI. Spatial and focused
+events then use three-phase dispatch:
+
+```text
+root -> parent -> target    capture
+                  target
+target -> parent -> root    bubble
+```
+
+`EventContext` supports:
+
+- Emit application message
+- Mark handled
+- Prevent default behavior
+- Stop propagation
+- Request focus
+- Capture or release pointer
+- Request invalidation
+
+Global shortcuts are capture handlers on an application root, not a separate
+broadcast channel.
+
+### Event Categories
+
+- Key press, repeat, and release
+- Text input
+- Bracketed paste
+- Mouse press, release, move, drag, and scroll
+- Focus gained and lost
+- Terminal focus gained and lost
+- Resize
+- Tick or animation frame
+- Custom application event
+
+Terminal capability responses are normally consumed by the terminal session
+before UI dispatch.
+
+## Hit Testing
+
+The renderer creates a hit map from the final composited surfaces. Each visible
+cell identifies the topmost interactive retained node.
+
+This guarantees that z-order, clipping, overlays, and hit testing agree. Mouse
+capture overrides ordinary hit testing for drag and release events.
+
+Hover changes are recalculated after a frame when geometry or z-order changes,
+even when the mouse does not move.
+
+## Focus
+
+The focus manager owns one active focus target per focus scope.
+
+Responsibilities include:
+
+- Forward and reverse tab traversal
+- Programmatic focus by key
+- Mouse-based focus
+- Focus scopes for dialogs and overlays
+- Restoring previous focus when a scope closes
+- Recovering when a focused node is removed
+- Optional directional navigation
+- Keeping a real terminal cursor synchronized with editable controls
+
+Focus traversal uses retained tree order unless a widget supplies an explicit
+order.
+
+## Commands
+
+`Command<Message>` is an opaque public type with constructors rather than a
+public enum whose representation becomes permanent.
+
+Initial constructors:
+
+```rust
+Command::none()
+Command::message(message)
+Command::batch(commands)
+Command::perform(future, map_output)
+Command::quit()
+```
+
+Commands make effects visible while preserving serialized application updates.
+
+The runtime also provides a thread-safe proxy:
+
+```rust
+let proxy: EventProxy<Message> = runner.event_proxy();
+proxy.send(Message::Loaded(data))?;
+```
+
+This is the primary integration point for Tokio, async-std, smol, worker
+threads, subprocess readers, and external callbacks.
+
+## Async Runtime Independence
+
+The core runtime may poll self-waking futures that do not require a particular
+reactor. Applications using runtime-specific I/O should run that work in their
+chosen executor and send results through `EventProxy`.
+
+Future extensions may add scoped task IDs and cancellation. Task ownership must
+be explicit; removing a retained component must not silently leave a task with
+a stale UI handle.
+
+## Scheduler
+
+The scheduler has independent queues for:
+
+- Terminal events
+- Application messages
+- Completed commands
+- Render requests
+- Timers or animation frames
+
+Scheduling rules:
+
+- Application updates are serialized.
+- Multiple invalidations in one turn coalesce into one frame.
+- Idle applications do not continuously render.
+- Interactive input has priority over low-priority animation work.
+- Resize invalidates layout and terminal state.
+- Backpressure may drop obsolete prepared frames but never reorder terminal bytes.
+- Shutdown drains or cancels work according to documented command policy.
+
+Concurrent application updates are not an initial goal. Concurrency belongs in
+effects; model mutation remains deterministic.
+
+## Standard Widgets
+
+The first standard widget set is:
+
+- Text
+- Block
+- Row
+- Column
+- Stack
+- Spacer
+- Button
+- Text input
+- Scroll view
+- List
+
+Tables, trees, forms, markdown, charts, and editors should begin as separate
+ecosystem crates until their lower-level requirements are understood.
