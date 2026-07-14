@@ -33,14 +33,19 @@ Grapheme segmentation and terminal display width are related but separate.
 ```rust
 pub enum WidthPolicy {
     Unicode,
+    Cjk,
     WcWidth,
-    TerminalCompatible,
 }
 ```
 
 The active policy is selected by the terminal session and passed into text
 measurement and frame construction. Every buffer being compared or composed
 must use compatible width semantics.
+
+`Unicode` uses sequence-aware width and keeps East Asian ambiguous characters
+narrow. `Cjk` uses sequence-aware width and makes ambiguous characters wide.
+`WcWidth` sums individual code point widths for compatibility with traditional
+terminal behavior.
 
 Environment overrides may be added for terminals whose behavior cannot be
 detected reliably.

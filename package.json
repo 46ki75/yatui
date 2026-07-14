@@ -1,0 +1,17 @@
+{
+  "name": "yatui-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.33.0+sha512.EFaLtKavtYyes2MNqQzJUWQXq+vT+rvmc58K55VyjaFJHp21pUTHatjrdXD1xLs9bGN7LLQb/c20f6gjyGSTGQ==",
+  "scripts": {
+    "lint": "markdownlint-cli2 \"**/*.md\"",
+    "lint:fix": "markdownlint-cli2 --fix \"**/*.md\"",
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "lefthook": "^2.1.9",
+    "markdownlint-cli2": "^0.22.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["lefthook"]
+  }
+}

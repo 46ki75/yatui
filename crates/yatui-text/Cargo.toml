@@ -1,0 +1,19 @@
+[package]
+name = "yatui-text"
+description = "Unicode grapheme segmentation and terminal width measurement for yatui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.2"

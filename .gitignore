@@ -1,0 +1,7 @@
+/coverage/
+/lcov.info
+/node_modules/
+/target/
+
+.DS_Store
+.idea/

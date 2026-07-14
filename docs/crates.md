@@ -286,10 +286,19 @@ During the pre-1.0 period, all workspace crates use one coordinated version.
 Internal dependencies use both a path and an exact package version:
 
 ```toml
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
+authors = ["Ikuma Yamashita <me@ikuma.cloud>"]
+repository = "https://github.com/46ki75/yatui"
+categories = ["command-line-interface"]
+keywords = ["terminal", "tui", "cli", "ui"]
 
 [workspace.dependencies]
 yatui-core = { path = "crates/yatui-core", version = "=0.1.0" }

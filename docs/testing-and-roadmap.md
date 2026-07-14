@@ -201,6 +201,8 @@ end-to-end scenarios.
 
 ### Milestone 1: Workspace And Core Types
 
+Status: implemented.
+
 Deliver:
 
 - Workspace manifests
@@ -212,6 +214,8 @@ Exit criterion: lower-level crates can share stable value types without a
 facade or backend dependency.
 
 ### Milestone 2: Text And Rendering Core
+
+Status: implemented.
 
 Deliver:
 
@@ -341,10 +345,8 @@ decision records:
 - How event bindings map dynamic event data into typed messages
 - Whether frame patches borrow cells or own encoded runs
 - Whether the terminal contract splits input, output, and lifecycle traits
-- Which Unicode width implementation and terminal overrides are used
 - Whether grapheme storage is global to a renderer or scoped to buffers
 - How controlled and uncontrolled scroll state coexist
-- What minimum Rust version is supported
 - Which crates support `no_std` or `alloc` without `std`
 
 An open question must not be accidentally stabilized through a convenience

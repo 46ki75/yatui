@@ -1,0 +1,15 @@
+[package]
+name = "yatui-core"
+description = "Foundational geometry, color, style, and cursor types for yatui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true

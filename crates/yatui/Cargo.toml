@@ -1,0 +1,20 @@
+[package]
+name = "yatui"
+description = "A Rust-native terminal user interface library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yatui-core = { workspace = true }
+yatui-render = { workspace = true }
+yatui-text = { workspace = true }
