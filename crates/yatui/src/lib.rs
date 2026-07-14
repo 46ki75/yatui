@@ -1,8 +1,8 @@
 //! Rust-native terminal user interface primitives.
 //!
 //! The facade currently exposes foundational [`core`], Unicode [`text`],
-//! cell-based [`render`], layout, retained [`ui`], and backend-neutral
-//! [`terminal`] APIs.
+//! cell-based [`render`], layout, retained [`ui`], backend-neutral
+//! [`terminal`], application [`runtime`], and controlled [`widgets`] APIs.
 //!
 //! The default `crossterm` feature exports [`CrosstermBackend`]. Disable
 //! default features when providing another terminal backend.
@@ -13,12 +13,16 @@ pub use yatui_core as core;
 pub use yatui_layout as layout;
 /// Grapheme-aware cell buffers, composition, and transactional frame diffing.
 pub use yatui_render as render;
+/// Serialized application updates, commands, scheduling, and terminal orchestration.
+pub use yatui_runtime as runtime;
 /// Backend-neutral terminal events, capabilities, state, and lifecycle.
 pub use yatui_terminal as terminal;
 /// Unicode grapheme segmentation and terminal width measurement.
 pub use yatui_text as text;
 /// Borrowed declarative elements and retained UI identity.
 pub use yatui_ui as ui;
+/// Standard backend-independent controlled widgets.
+pub use yatui_widgets as widgets;
 
 #[cfg(feature = "crossterm")]
 pub use yatui_backend_crossterm::CrosstermBackend;
@@ -26,16 +30,29 @@ pub use yatui_backend_crossterm::CrosstermBackend;
 pub use yatui_core::{
     Color, CursorShape, CursorState, CursorVisibility, Insets, Modifier, Point, Rect, Size, Style,
 };
-pub use yatui_layout::{Dimension, LayoutStyle};
+pub use yatui_layout::{Dimension, LayoutStyle, Position};
 pub use yatui_render::{
     Buffer, Canvas, CommitError, FramePatch, HitId, HitMap, PreparedFrame, Renderer,
+};
+pub use yatui_runtime::{
+    AppRunner, Application, Command, DispatchReport, EventProxy, EventProxySendError,
+    HeadlessRenderError, HeadlessRenderOutcome, ProcessReport, RuntimeError, TerminalRenderOutcome,
+    UpdateContext, run, translate_terminal_event,
 };
 pub use yatui_terminal::{
     Capabilities, TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
 };
-pub use yatui_text::{TextMetrics, WidthPolicy, grapheme_width, graphemes, measure};
+pub use yatui_text::{
+    ByteOffset, Selection, TextBuffer, TextEdit, TextMetrics, TextMovement, WidthPolicy,
+    grapheme_width, graphemes, measure,
+};
 pub use yatui_ui::{
     DispatchOutcome, Element, EventContext, EventPhase, FocusChange, FocusError, Invalidation, Key,
     KeyAction, KeyModifiers, NodeId, PointerButton, PointerEvent, PointerEventKind,
     PreparedUiFrame, UiCommitError, UiEvent, UiKey, UiKeyEvent, UiTree, WidgetKind,
+};
+pub use yatui_widgets::{
+    Block, BorderSet, Button, ScrollView, TextInput, button, column, column_with_gap,
+    flexible_spacer, list, list_with_gap, row, row_with_gap, scroll_view, spacer,
+    spacer_with_dimensions, stack, text_input,
 };

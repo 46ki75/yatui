@@ -2,13 +2,16 @@ use taffy::{
     AvailableSpace as TaffyAvailableSpace, Dimension as TaffyDimension, LengthPercentage,
     TaffyTree,
     geometry::{Rect as TaffyRect, Size as TaffySize},
-    style::{AlignItems, FlexDirection as TaffyFlexDirection, JustifyContent, Style as TaffyStyle},
+    style::{
+        AlignItems, FlexDirection as TaffyFlexDirection, JustifyContent, Position as TaffyPosition,
+        Style as TaffyStyle,
+    },
 };
 use yatui_core::{Insets, Point, Rect, Size};
 
 use crate::{
     Align, AvailableSpace, ComputedLayout, Dimension, FlexDirection, Justify, LayoutError,
-    LayoutNodeId, LayoutStyle, MeasureInput,
+    LayoutNodeId, LayoutStyle, MeasureInput, Position,
 };
 
 pub(crate) struct EngineResult {
@@ -171,6 +174,10 @@ fn taffy_style(style: LayoutStyle) -> TaffyStyle {
         },
         padding: taffy_insets(style.padding),
         border: taffy_insets(style.border),
+        position: match style.position {
+            Position::Relative => TaffyPosition::Relative,
+            Position::Absolute => TaffyPosition::Absolute,
+        },
         ..TaffyStyle::default()
     }
 }

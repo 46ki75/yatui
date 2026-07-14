@@ -288,6 +288,9 @@ broadcasts or manual focus flags.
 
 ### Milestone 6: Runtime And Widgets
 
+Status: initial implementation complete. The public downstream test harness and
+application examples are delivered in Milestone 7.
+
 Deliver:
 
 - `yatui-runtime`

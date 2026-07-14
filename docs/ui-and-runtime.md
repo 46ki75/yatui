@@ -39,10 +39,13 @@ impl Application for Counter {
     fn update(
         &mut self,
         message: Message,
-        _context: &mut UpdateContext<Message>,
+        context: &mut UpdateContext<Message>,
     ) -> Command<Message> {
         match message {
-            Message::Increment => self.count += 1,
+            Message::Increment => {
+                self.count += 1;
+                context.invalidate(Invalidation::Recompose);
+            }
             Message::Quit => return Command::quit(),
         }
 
@@ -254,6 +257,7 @@ Command::none()
 Command::message(message)
 Command::batch(commands)
 Command::perform(future, map_output)
+Command::after(duration, message)
 Command::quit()
 ```
 
@@ -268,6 +272,13 @@ proxy.send(Message::Loaded(data))?;
 
 This is the primary integration point for Tokio, async-std, smol, worker
 threads, subprocess readers, and external callbacks.
+
+The initial implementation uses explicit invalidation through `UpdateContext`.
+An update that mutates visible model state requests `Paint`, `Layout`, or
+`Recompose`; updates that request no visual work do not rebuild a view. Immediate
+messages in command batches preserve declaration order; future outputs are
+delivered when they complete. Quitting cancels unfinished command futures when
+the runner is dropped.
 
 ## Async Runtime Independence
 
@@ -302,6 +313,18 @@ Scheduling rules:
 Concurrent application updates are not an initial goal. Concurrency belongs in
 effects; model mutation remains deterministic.
 
+The runtime polls self-waking futures without selecting an async reactor. Work
+that requires Tokio, async-std, smol, or another reactor runs on that executor
+and reports owned messages through `EventProxy`. Terminal writes commit UI,
+hit-map, and renderer state only after `WriteOutcome::Applied`; deferred frames
+are discarded, and unknown output state forces a complete repaint.
+
+Each scheduler turn has a finite work budget. Arrived application messages are
+processed before another bounded group of future polls, and terminal input is
+checked between saturated turns. Since terminal polling is a synchronous
+backend contract, proxy messages arriving during a poll are observed no later
+than the caller-configured poll interval.
+
 ## Standard Widgets
 
 The first standard widget set is:
@@ -319,3 +342,10 @@ The first standard widget set is:
 
 Tables, trees, forms, markdown, charts, and editors should begin as separate
 ecosystem crates until their lower-level requirements are understood.
+
+The initial widgets are controlled. `TextInput` borrows an application-owned
+`TextBuffer` and emits an updated owned buffer; `ScrollView` borrows an offset
+and emits signed deltas. Button activation uses a repeatable message factory,
+so application messages do not need to implement `Clone`. Block painting and
+stack/scroll composition use the backend-neutral `Element` paint and layout
+contracts rather than terminal-backend types.

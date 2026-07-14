@@ -265,13 +265,19 @@ fn is_effectively_visible(
     viewport: Option<Size>,
 ) -> bool {
     let mut current = Some(node);
+    let mut target = true;
     let mut visible = viewport.map(|size| Rect::from_origin_size(Point::ORIGIN, size));
     while let Some(candidate) = current {
         let Some(retained) = nodes.get(&candidate) else {
             return false;
         };
+        let clip = if target {
+            retained.layout
+        } else {
+            retained.content
+        };
         visible = Some(match visible {
-            Some(rect) => match rect.intersection(retained.layout) {
+            Some(rect) => match rect.intersection(clip) {
                 Some(intersection) => intersection,
                 None => return false,
             },
@@ -280,6 +286,7 @@ fn is_effectively_visible(
         if retained.layout.is_empty() {
             return false;
         }
+        target = false;
         current = retained.parent;
     }
     visible.is_some()

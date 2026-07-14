@@ -1,4 +1,4 @@
-use yatui_core::Rect;
+use yatui_core::{Point, Rect};
 use yatui_layout::LayoutStyle;
 
 use crate::{Invalidation, Key, WidgetKind};
@@ -15,15 +15,23 @@ pub struct RetainedNode {
     pub(crate) parent: Option<NodeId>,
     pub(crate) children: Vec<NodeId>,
     pub(crate) layout: Rect,
+    pub(crate) content: Rect,
     pub(crate) layout_style: LayoutStyle,
     pub(crate) visual_style: yatui_core::Style,
     pub(crate) content_fingerprint: u64,
+    pub(crate) paint_fingerprint: u64,
     pub(crate) invalidation: Invalidation,
     pub(crate) interactive: bool,
     pub(crate) focusable: bool,
     pub(crate) focus_scope: bool,
     pub(crate) focus_order: Option<i32>,
     pub(crate) cursor_intent: Option<yatui_core::CursorState>,
+    pub(crate) cursor_fingerprint: u64,
+    pub(crate) dynamic_cursor: bool,
+    pub(crate) child_offset: Point,
+    pub(crate) child_offset_fingerprint: u64,
+    pub(crate) dynamic_child_offset: bool,
+    pub(crate) fill_background: bool,
 }
 
 impl RetainedNode {
@@ -55,6 +63,12 @@ impl RetainedNode {
     #[must_use]
     pub const fn layout(&self) -> Rect {
         self.layout
+    }
+
+    /// Returns the most recently computed content box.
+    #[must_use]
+    pub const fn content(&self) -> Rect {
+        self.content
     }
 
     /// Returns this node's pending invalidation.

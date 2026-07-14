@@ -18,12 +18,36 @@ pub enum EventPhase {
 /// A key understood by default UI behavior.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UiKey {
+    /// Backspace.
+    Backspace,
     /// Tab traversal key.
     Tab,
     /// Enter or return.
     Enter,
     /// Escape.
     Escape,
+    /// Left arrow.
+    Left,
+    /// Right arrow.
+    Right,
+    /// Up arrow.
+    Up,
+    /// Down arrow.
+    Down,
+    /// Start of a line or collection.
+    Home,
+    /// End of a line or collection.
+    End,
+    /// Page up.
+    PageUp,
+    /// Page down.
+    PageDown,
+    /// Forward delete.
+    Delete,
+    /// Insert.
+    Insert,
+    /// Function key.
+    Function(u8),
     /// A Unicode character.
     Character(char),
     /// A key without built-in UI semantics.
@@ -45,11 +69,21 @@ impl KeyModifiers {
     pub const ALT: Self = Self(1 << 2);
     /// Super or command modifier.
     pub const SUPER: Self = Self(1 << 3);
+    /// Hyper modifier.
+    pub const HYPER: Self = Self(1 << 4);
+    /// Meta modifier.
+    pub const META: Self = Self(1 << 5);
 
     /// Returns whether every modifier in `other` is active.
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
+    }
+
+    /// Returns whether no modifiers are active.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -114,6 +148,8 @@ pub enum PointerEventKind {
     Moved,
     /// Vertical scroll amount.
     Scroll(i16),
+    /// Horizontal scroll amount.
+    ScrollHorizontal(i16),
 }
 
 /// Spatial pointer input in viewport coordinates.

@@ -12,8 +12,11 @@ RAII terminal sessions, a Crossterm backend, private-Taffy flex layout,
 borrowed declarative elements, retained identity, keyed reconciliation, and a
 headless UI-to-frame pipeline. Capture-target-bubble event routing,
 transactional hit maps, pointer capture, hover tracking, focus scopes, keyboard
-traversal, and focused cursor synchronization are also implemented. The
-remaining subsystems are developed incrementally.
+traversal, and focused cursor synchronization are also implemented. The runtime
+adds serialized model updates, opaque commands, external event proxies,
+runtime-neutral futures, idle-aware rendering, and transactional terminal
+orchestration. Standard controlled widgets include flex composition, blocks,
+buttons, stacks, lists, scrolling, and grapheme-aware text input.
 
 ## Features
 

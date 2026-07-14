@@ -1,5 +1,7 @@
-use yatui_core::{CursorState, Style};
+use yatui_core::{CursorState, Point, Size, Style};
 use yatui_layout::LayoutStyle;
+use yatui_render::{Canvas, DrawError};
+use yatui_text::WidthPolicy;
 
 use crate::{EventContext, EventPhase, Key, UiEvent};
 
@@ -37,6 +39,14 @@ pub struct Element<'a, Message> {
     focus_scope: bool,
     focus_order: Option<i32>,
     cursor: Option<CursorState>,
+    dynamic_cursor: Option<Box<CursorCallback<'a>>>,
+    cursor_fingerprint: u64,
+    paint: Option<Box<PaintCallback<'a>>>,
+    paint_fingerprint: u64,
+    child_offset: Point,
+    dynamic_child_offset: Option<Box<ChildOffsetCallback<'a>>>,
+    child_offset_fingerprint: u64,
+    fill_background: bool,
 }
 
 struct EventHandler<'a, Message> {
@@ -45,6 +55,9 @@ struct EventHandler<'a, Message> {
 }
 
 type HandlerCallback<'a, Message> = dyn Fn(&UiEvent, &mut EventContext<'_, Message>) + 'a;
+type PaintCallback<'a> = dyn Fn(Size, &mut Canvas<'_>) -> Result<(), DrawError> + 'a;
+type CursorCallback<'a> = dyn Fn(WidthPolicy, Size) -> CursorState + 'a;
+type ChildOffsetCallback<'a> = dyn Fn(Size, WidthPolicy) -> Point + 'a;
 
 impl<'a, Message> Element<'a, Message> {
     /// Creates an empty container from ordered children.
@@ -63,6 +76,14 @@ impl<'a, Message> Element<'a, Message> {
             focus_scope: false,
             focus_order: None,
             cursor: None,
+            dynamic_cursor: None,
+            cursor_fingerprint: 0,
+            paint: None,
+            paint_fingerprint: 0,
+            child_offset: Point::ORIGIN,
+            dynamic_child_offset: None,
+            child_offset_fingerprint: 0,
+            fill_background: true,
         }
     }
 
@@ -82,6 +103,14 @@ impl<'a, Message> Element<'a, Message> {
             focus_scope: false,
             focus_order: None,
             cursor: None,
+            dynamic_cursor: None,
+            cursor_fingerprint: 0,
+            paint: None,
+            paint_fingerprint: 0,
+            child_offset: Point::ORIGIN,
+            dynamic_child_offset: None,
+            child_offset_fingerprint: 0,
+            fill_background: true,
         }
     }
 
@@ -162,8 +191,68 @@ impl<'a, Message> Element<'a, Message> {
 
     /// Sets a terminal cursor intent local to this element's border box.
     #[must_use]
-    pub const fn cursor(mut self, cursor: CursorState) -> Self {
+    pub fn cursor(mut self, cursor: CursorState) -> Self {
         self.cursor = Some(cursor);
+        self.dynamic_cursor = None;
+        self
+    }
+
+    /// Computes terminal cursor intent with the renderer's active width policy.
+    #[must_use]
+    pub fn cursor_with(
+        mut self,
+        fingerprint: u64,
+        cursor: impl Fn(WidthPolicy, Size) -> CursorState + 'a,
+    ) -> Self {
+        self.cursor = None;
+        self.dynamic_cursor = Some(Box::new(cursor));
+        self.cursor_fingerprint = fingerprint;
+        self
+    }
+
+    /// Adds frame-local custom painting after intrinsic content and before children.
+    ///
+    /// `fingerprint` must change whenever captured visual data changes so retained
+    /// invalidation can detect the update.
+    #[must_use]
+    pub fn paint(
+        mut self,
+        fingerprint: u64,
+        painter: impl Fn(Size, &mut Canvas<'_>) -> Result<(), DrawError> + 'a,
+    ) -> Self {
+        self.paint = Some(Box::new(painter));
+        self.paint_fingerprint = fingerprint;
+        self
+    }
+
+    /// Translates all descendants while retaining this node as their clip viewport.
+    #[must_use]
+    pub fn child_offset(mut self, offset: Point) -> Self {
+        self.child_offset = offset;
+        self.dynamic_child_offset = None;
+        self
+    }
+
+    /// Computes descendant translation from resolved size and width policy.
+    #[must_use]
+    pub fn child_offset_with(
+        mut self,
+        fingerprint: u64,
+        offset: impl Fn(Size, WidthPolicy) -> Point + 'a,
+    ) -> Self {
+        self.child_offset = Point::ORIGIN;
+        self.dynamic_child_offset = Some(Box::new(offset));
+        self.child_offset_fingerprint = fingerprint;
+        self
+    }
+
+    /// Enables or disables filling this node's complete border box.
+    ///
+    /// Disable filling for sparse overlays that should preserve lower visual
+    /// cells and hit identities where they do not paint.
+    #[must_use]
+    pub const fn fill_background(mut self, fill_background: bool) -> Self {
+        self.fill_background = fill_background;
         self
     }
 
@@ -223,8 +312,63 @@ impl<'a, Message> Element<'a, Message> {
         self.focus_order
     }
 
-    pub(crate) const fn cursor_intent(&self) -> Option<CursorState> {
+    pub(crate) fn cursor_intent(
+        &self,
+        width_policy: WidthPolicy,
+        size: Size,
+    ) -> Option<CursorState> {
+        self.dynamic_cursor
+            .as_ref()
+            .map(|cursor| cursor(width_policy, size))
+            .or(self.cursor)
+    }
+
+    pub(crate) const fn fixed_cursor_intent(&self) -> Option<CursorState> {
         self.cursor
+    }
+
+    pub(crate) const fn cursor_fingerprint(&self) -> u64 {
+        self.cursor_fingerprint
+    }
+
+    pub(crate) const fn has_dynamic_cursor(&self) -> bool {
+        self.dynamic_cursor.is_some()
+    }
+
+    pub(crate) fn paint_content(
+        &self,
+        size: Size,
+        canvas: &mut Canvas<'_>,
+    ) -> Result<(), DrawError> {
+        self.paint
+            .as_ref()
+            .map_or(Ok(()), |painter| painter(size, canvas))
+    }
+
+    pub(crate) const fn paint_fingerprint(&self) -> u64 {
+        self.paint_fingerprint
+    }
+
+    pub(crate) const fn fixed_children_offset(&self) -> Point {
+        self.child_offset
+    }
+
+    pub(crate) fn children_offset(&self, size: Size, width_policy: WidthPolicy) -> Point {
+        self.dynamic_child_offset
+            .as_ref()
+            .map_or(self.child_offset, |offset| offset(size, width_policy))
+    }
+
+    pub(crate) const fn child_offset_fingerprint(&self) -> u64 {
+        self.child_offset_fingerprint
+    }
+
+    pub(crate) const fn has_dynamic_child_offset(&self) -> bool {
+        self.dynamic_child_offset.is_some()
+    }
+
+    pub(crate) const fn fills_background(&self) -> bool {
+        self.fill_background
     }
 
     pub(crate) const fn text_content(&self) -> Option<&'a str> {

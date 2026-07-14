@@ -16,6 +16,16 @@ pub enum FlexDirection {
     ColumnReverse,
 }
 
+/// How a node participates in its parent's layout flow.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum Position {
+    /// Participate in flex layout.
+    #[default]
+    Relative,
+    /// Do not consume flex space and position from the parent's origin.
+    Absolute,
+}
+
 /// Cross-axis alignment of children.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Align {
@@ -79,6 +89,8 @@ pub struct LayoutStyle {
     pub padding: Insets,
     /// Border thickness around padding and content.
     pub border: Insets,
+    /// Relative or absolute positioning within the parent.
+    pub position: Position,
 }
 
 impl LayoutStyle {
@@ -100,6 +112,7 @@ impl LayoutStyle {
             gap: 0,
             padding: Insets::all(0),
             border: Insets::all(0),
+            position: Position::Relative,
         }
     }
 
@@ -137,6 +150,13 @@ impl LayoutStyle {
     pub const fn flex(mut self, grow: u16, shrink: u16) -> Self {
         self.flex_grow = grow;
         self.flex_shrink = shrink;
+        self
+    }
+
+    /// Sets how this node participates in its parent's layout flow.
+    #[must_use]
+    pub const fn position(mut self, position: Position) -> Self {
+        self.position = position;
         self
     }
 }

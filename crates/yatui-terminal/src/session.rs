@@ -79,9 +79,10 @@ impl<B: TerminalBackend> TerminalSession<B> {
         if self.suspended {
             return Ok(());
         }
+        self.backend.restore()?;
         self.suspended = true;
         self.full_repaint_required = true;
-        self.backend.restore()
+        Ok(())
     }
 
     /// Reapplies desired state after suspension.
@@ -102,9 +103,19 @@ impl<B: TerminalBackend> TerminalSession<B> {
 
     /// Explicitly restores the terminal.
     pub fn restore(&mut self) -> Result<(), B::Error> {
+        if self.suspended {
+            return Ok(());
+        }
+        self.backend.restore()?;
         self.suspended = true;
         self.full_repaint_required = true;
-        self.backend.restore()
+        Ok(())
+    }
+
+    /// Returns whether terminal modes are currently restored.
+    #[must_use]
+    pub const fn is_suspended(&self) -> bool {
+        self.suspended
     }
 
     /// Returns a shared reference to the backend.
@@ -121,7 +132,9 @@ impl<B: TerminalBackend> TerminalSession<B> {
 
 impl<B: TerminalBackend> Drop for TerminalSession<B> {
     fn drop(&mut self) {
-        let _ = self.backend.restore();
+        if !self.suspended {
+            let _ = self.backend.restore();
+        }
     }
 }
 

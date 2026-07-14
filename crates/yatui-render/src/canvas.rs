@@ -109,6 +109,12 @@ impl<'a> Canvas<'a> {
         self.origin
     }
 
+    /// Returns the width policy used for grapheme drawing.
+    #[must_use]
+    pub const fn width_policy(&self) -> WidthPolicy {
+        self.width_policy
+    }
+
     /// Restricts this canvas to `clip` in buffer coordinates.
     #[must_use]
     pub fn with_clip(mut self, clip: Rect) -> Self {

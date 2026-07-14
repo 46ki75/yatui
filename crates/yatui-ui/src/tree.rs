@@ -532,12 +532,18 @@ impl UiTree {
                 input.known_height.unwrap_or(saturating_u16(metrics.height)),
             )
         })?;
-        for (layout_node, retained, _) in &mapping {
-            let bounds = layout_tree.layout(*layout_node)?.bounds;
-            if let Some(node) = self.nodes.get_mut(retained) {
-                node.layout = bounds;
-            }
-        }
+        let by_retained_layout = mapping
+            .iter()
+            .map(|(layout, retained, _)| (*retained, *layout))
+            .collect::<HashMap<_, _>>();
+        self.assign_layout(
+            root,
+            element,
+            &layout_tree,
+            &by_retained_layout,
+            Point::ORIGIN,
+            width_policy,
+        )?;
 
         let focus_change = self.focus.sync(&self.nodes, self.root, self.viewport);
         self.record_focus_change(focus_change);
@@ -547,7 +553,7 @@ impl UiTree {
             .iter()
             .map(|(_, retained, element)| (*retained, *element))
             .collect::<HashMap<_, _>>();
-        let cursor = self.resolve_cursor(&by_retained, viewport);
+        let cursor = self.resolve_cursor(&by_retained, viewport, width_policy);
 
         let prepared = renderer.prepare(viewport, cursor, |canvas| {
             self.paint_node(
@@ -610,8 +616,20 @@ impl UiTree {
                     || retained.focusable != element.is_focusable()
                     || retained.focus_scope != element.is_focus_scope()
                     || retained.focus_order != element.explicit_focus_order()
-                    || retained.cursor_intent != element.cursor_intent()
+                    || retained.cursor_intent != element.fixed_cursor_intent()
+                    || retained.cursor_fingerprint != element.cursor_fingerprint()
+                    || retained.dynamic_cursor != element.has_dynamic_cursor()
+                    || retained.fill_background != element.fills_background()
                 {
+                    requested.request(Invalidation::Paint);
+                }
+                if retained.child_offset != element.fixed_children_offset()
+                    || retained.child_offset_fingerprint != element.child_offset_fingerprint()
+                    || retained.dynamic_child_offset != element.has_dynamic_child_offset()
+                {
+                    requested.request(Invalidation::Layout);
+                }
+                if retained.paint_fingerprint != element.paint_fingerprint() {
                     requested.request(Invalidation::Paint);
                 }
                 retained.layout_style = element.layout_style();
@@ -621,7 +639,14 @@ impl UiTree {
                 retained.focusable = element.is_focusable();
                 retained.focus_scope = element.is_focus_scope();
                 retained.focus_order = element.explicit_focus_order();
-                retained.cursor_intent = element.cursor_intent();
+                retained.cursor_intent = element.fixed_cursor_intent();
+                retained.cursor_fingerprint = element.cursor_fingerprint();
+                retained.dynamic_cursor = element.has_dynamic_cursor();
+                retained.child_offset = element.fixed_children_offset();
+                retained.child_offset_fingerprint = element.child_offset_fingerprint();
+                retained.dynamic_child_offset = element.has_dynamic_child_offset();
+                retained.fill_background = element.fills_background();
+                retained.paint_fingerprint = element.paint_fingerprint();
                 retained.invalidation.request(requested);
             }
             self.pending.request(requested);
@@ -675,6 +700,7 @@ impl UiTree {
                 parent,
                 children: Vec::new(),
                 layout: Rect::ZERO,
+                content: Rect::ZERO,
                 layout_style: element.layout_style(),
                 visual_style: element.visual_style(),
                 content_fingerprint: content_fingerprint(element),
@@ -683,7 +709,14 @@ impl UiTree {
                 focusable: element.is_focusable(),
                 focus_scope: element.is_focus_scope(),
                 focus_order: element.explicit_focus_order(),
-                cursor_intent: element.cursor_intent(),
+                cursor_intent: element.fixed_cursor_intent(),
+                cursor_fingerprint: element.cursor_fingerprint(),
+                dynamic_cursor: element.has_dynamic_cursor(),
+                child_offset: element.fixed_children_offset(),
+                child_offset_fingerprint: element.child_offset_fingerprint(),
+                dynamic_child_offset: element.has_dynamic_child_offset(),
+                fill_background: element.fills_background(),
+                paint_fingerprint: element.paint_fingerprint(),
             },
         );
         id
@@ -728,6 +761,33 @@ impl UiTree {
         Ok(layout)
     }
 
+    fn assign_layout<Message>(
+        &mut self,
+        retained: NodeId,
+        element: &Element<'_, Message>,
+        tree: &LayoutTree,
+        mapping: &HashMap<NodeId, LayoutNodeId>,
+        offset: Point,
+        width_policy: yatui_text::WidthPolicy,
+    ) -> Result<(), LayoutError> {
+        let layout = tree.layout(mapping[&retained])?;
+        let bounds = layout.bounds.translated(offset.x, offset.y);
+        let content = layout.content.translated(offset.x, offset.y);
+        let node = self
+            .nodes
+            .get_mut(&retained)
+            .expect("mapped retained node exists");
+        node.layout = bounds;
+        node.content = content;
+        let child_offset = element.children_offset(bounds.size(), width_policy);
+        let offset = offset.translated(child_offset.x, child_offset.y);
+        let children = self.nodes[&retained].children.clone();
+        for (child, child_element) in children.into_iter().zip(element.children()) {
+            self.assign_layout(child, child_element, tree, mapping, offset, width_policy)?;
+        }
+        Ok(())
+    }
+
     fn paint_node<Message>(
         &self,
         retained: NodeId,
@@ -750,16 +810,25 @@ impl UiTree {
         };
         {
             let mut scoped = canvas.scoped(clip, node.layout.origin()).with_hit(hit);
-            scoped.fill(
-                Rect::new(0, 0, node.layout.width, node.layout.height),
-                element.visual_style(),
-            )?;
-            if let Some(text) = element.text_content() {
-                scoped.draw_text(Point::ORIGIN, text, element.visual_style(), None)?;
+            if element.fills_background() {
+                scoped.fill(
+                    Rect::new(0, 0, node.layout.width, node.layout.height),
+                    element.visual_style(),
+                )?;
             }
+            if let Some(text) = element.text_content() {
+                let text_origin = Point::new(
+                    node.content.x.saturating_sub(node.layout.x),
+                    node.content.y.saturating_sub(node.layout.y),
+                );
+                let mut text_canvas = scoped.scoped(node.content, node.layout.origin());
+                text_canvas.draw_text(text_origin, text, element.visual_style(), None)?;
+            }
+            element.paint_content(node.layout.size(), &mut scoped)?;
         }
+        let children_clip = clip.intersection(node.content).unwrap_or(Rect::ZERO);
         for (child, element) in node.children.iter().zip(element.children()) {
-            self.paint_node(*child, element, canvas, clip, hit)?;
+            self.paint_node(*child, element, canvas, children_clip, hit)?;
         }
         Ok(())
     }
@@ -768,6 +837,7 @@ impl UiTree {
         &self,
         elements: &HashMap<NodeId, &Element<'_, Message>>,
         viewport: Size,
+        width_policy: yatui_text::WidthPolicy,
     ) -> CursorState {
         let Some(focused) = self.focused() else {
             return CursorState::HIDDEN;
@@ -775,7 +845,7 @@ impl UiTree {
         let (Some(node), Some(element)) = (self.nodes.get(&focused), elements.get(&focused)) else {
             return CursorState::HIDDEN;
         };
-        let Some(mut cursor) = element.cursor_intent() else {
+        let Some(mut cursor) = element.cursor_intent(width_policy, node.layout.size()) else {
             return CursorState::HIDDEN;
         };
         if cursor.visibility == CursorVisibility::Hidden {
@@ -788,11 +858,18 @@ impl UiTree {
         let viewport = Rect::from_origin_size(Point::ORIGIN, viewport);
         let mut clip = Some(viewport);
         let mut current = Some(focused);
+        let mut target = true;
         while let Some(candidate) = current {
             let Some(retained) = self.nodes.get(&candidate) else {
                 return CursorState::HIDDEN;
             };
-            clip = clip.and_then(|clip| clip.intersection(retained.layout));
+            let bounds = if target {
+                retained.layout
+            } else {
+                retained.content
+            };
+            clip = clip.and_then(|clip| clip.intersection(bounds));
+            target = false;
             current = retained.parent;
         }
         if !clip.is_some_and(|clip| clip.contains(cursor.position)) {
@@ -991,10 +1068,10 @@ fn validate_keys<Message>(element: &Element<'_, Message>) -> Result<(), Reconcil
 }
 
 fn content_fingerprint<Message>(element: &Element<'_, Message>) -> u64 {
-    let Some(text) = element.text_content() else {
-        return 0;
-    };
-    text.as_bytes()
+    element
+        .text_content()
+        .unwrap_or_default()
+        .as_bytes()
         .iter()
         .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)

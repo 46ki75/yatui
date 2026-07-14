@@ -10,5 +10,5 @@ mod tree;
 
 pub use dimension::Dimension;
 pub use measure::{AvailableSpace, MeasureInput};
-pub use style::{Align, FlexDirection, Justify, LayoutStyle};
+pub use style::{Align, FlexDirection, Justify, LayoutStyle, Position};
 pub use tree::{ComputedLayout, LayoutError, LayoutNodeId, LayoutTree};

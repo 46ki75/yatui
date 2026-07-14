@@ -406,9 +406,11 @@ dependencies = [
  "yatui-core",
  "yatui-layout",
  "yatui-render",
+ "yatui-runtime",
  "yatui-terminal",
  "yatui-text",
  "yatui-ui",
+ "yatui-widgets",
 ]
 
 [[package]]
@@ -443,6 +445,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yatui-runtime"
+version = "0.1.0"
+dependencies = [
+ "yatui-core",
+ "yatui-render",
+ "yatui-terminal",
+ "yatui-ui",
+]
+
+[[package]]
 name = "yatui-terminal"
 version = "0.1.0"
 dependencies = [
@@ -467,4 +479,15 @@ dependencies = [
  "yatui-layout",
  "yatui-render",
  "yatui-text",
+]
+
+[[package]]
+name = "yatui-widgets"
+version = "0.1.0"
+dependencies = [
+ "yatui-core",
+ "yatui-layout",
+ "yatui-render",
+ "yatui-text",
+ "yatui-ui",
 ]
