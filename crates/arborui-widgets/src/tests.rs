@@ -192,6 +192,26 @@ fn text_input_scrolls_horizontally_to_keep_cursor_visible() -> Result<(), Box<dy
 }
 
 #[test]
+fn auto_sized_text_input_reserves_a_visible_cursor_cell() -> Result<(), Box<dyn Error>> {
+    let buffer = TextBuffer::new("m");
+    let view = Block::new(crate::row([
+        TextInput::new(&buffer, |updated| updated).build()
+    ]))
+    .layout(LayoutStyle::new().size(Dimension::cells(6), Dimension::cells(3)))
+    .build();
+    let tree = UiTree::new();
+    let mut renderer = Renderer::new(Size::new(6, 3), WidthPolicy::Unicode);
+    let prepared = tree.prepare(&view, Size::new(6, 3), &mut renderer)?;
+
+    assert_eq!(
+        patch_grapheme(prepared.patch(), Point::new(1, 1)),
+        Some("m")
+    );
+    assert_eq!(prepared.patch().cursor.position, Point::new(2, 1));
+    Ok(())
+}
+
+#[test]
 fn intrinsic_text_starts_in_its_content_box() -> Result<(), Box<dyn Error>> {
     let view = Element::<()>::text("x").layout(LayoutStyle {
         padding: arborui_core::Insets::all(1),

@@ -4,7 +4,22 @@ use std::time::Duration;
 
 use arborui::{Point, TextBuffer};
 use arborui_example_focus_queue::{FocusQueue, Message};
-use arborui_test::{Key, KeyCode, KeyModifiers, MouseEvent, MouseEventKind, Size, TestApp};
+use arborui_test::{
+    Key, KeyCode, KeyModifiers, MouseEvent, MouseEventKind, Size, TestApp, TestCellContent,
+};
+
+#[test]
+fn first_typed_character_is_visible_in_the_input() {
+    let mut app = TestApp::new(FocusQueue::default(), Size::new(60, 16));
+
+    app.key(KeyCode::Character('m'));
+
+    assert_eq!(app.application().draft(), "m");
+    assert!(matches!(
+        app.frame().cell(Point::new(1, 1)).map(|cell| &cell.content),
+        Some(TestCellContent::Grapheme { text, .. }) if text.as_ref() == "m"
+    ));
+}
 
 #[test]
 fn tasks_are_added_and_completed_through_widgets() {

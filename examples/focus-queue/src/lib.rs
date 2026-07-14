@@ -287,7 +287,13 @@ impl Application for FocusQueue {
             .focus_order(1)
             .build()
             .key("add-task");
-        let input_panel = Block::new(row_with_gap([input, add], 1))
+        let input_row = row_with_gap([input, add], 1).layout(LayoutStyle {
+            width: full_width,
+            direction: FlexDirection::Row,
+            gap: 1,
+            ..LayoutStyle::default()
+        });
+        let input_panel = Block::new(input_row)
             .title("New task")
             .border_style(border_style)
             .layout(LayoutStyle::new().size(full_width, Dimension::cells(3)))

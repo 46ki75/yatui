@@ -85,9 +85,11 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
         );
         let on_change = self.on_change;
         let on_submit = self.on_submit;
+        let cursor_slot = Element::<Message>::container([])
+            .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1)));
         let mut element = Element::custom(
             "text-input",
-            [Element::text(buffer.text()).style(self.style)],
+            [Element::text(buffer.text()).style(self.style), cursor_slot],
         )
         .layout(layout)
         .style(self.style)
