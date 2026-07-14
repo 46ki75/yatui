@@ -10,8 +10,10 @@ shared core types, Unicode grapheme measurement, cell buffers, clipped drawing,
 surface composition, transactional frame diffing, normalized terminal events,
 RAII terminal sessions, a Crossterm backend, private-Taffy flex layout,
 borrowed declarative elements, retained identity, keyed reconciliation, and a
-headless UI-to-frame pipeline. The remaining subsystems are developed
-incrementally.
+headless UI-to-frame pipeline. Capture-target-bubble event routing,
+transactional hit maps, pointer capture, hover tracking, focus scopes, keyboard
+traversal, and focused cursor synchronization are also implemented. The
+remaining subsystems are developed incrementally.
 
 ## Features
 

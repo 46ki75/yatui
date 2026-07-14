@@ -353,7 +353,7 @@ mod tests {
     fn no_op_patch_emits_no_bytes() -> Result<(), Box<dyn std::error::Error>> {
         let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
         let first = renderer.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
-        renderer.commit(first);
+        assert_eq!(renderer.commit(first), Ok(()));
         let second = renderer.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
         let mut output = Vec::new();
 

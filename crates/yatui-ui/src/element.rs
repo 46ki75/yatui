@@ -1,9 +1,7 @@
-use std::marker::PhantomData;
-
-use yatui_core::Style;
+use yatui_core::{CursorState, Style};
 use yatui_layout::LayoutStyle;
 
-use crate::Key;
+use crate::{EventContext, EventPhase, Key, UiEvent};
 
 /// Stable category used to determine whether retained state is compatible.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -26,7 +24,6 @@ enum Content<'a> {
 ///
 /// Borrowed content is used only during synchronous reconciliation, layout,
 /// and painting. It is never copied into the retained tree.
-#[derive(Clone, Debug)]
 pub struct Element<'a, Message> {
     key: Option<Key>,
     kind: WidgetKind,
@@ -34,8 +31,20 @@ pub struct Element<'a, Message> {
     style: Style,
     content: Content<'a>,
     children: Vec<Self>,
-    message: PhantomData<fn() -> Message>,
+    handlers: Vec<EventHandler<'a, Message>>,
+    interactive: bool,
+    focusable: bool,
+    focus_scope: bool,
+    focus_order: Option<i32>,
+    cursor: Option<CursorState>,
 }
+
+struct EventHandler<'a, Message> {
+    phase: EventPhase,
+    callback: Box<HandlerCallback<'a, Message>>,
+}
+
+type HandlerCallback<'a, Message> = dyn Fn(&UiEvent, &mut EventContext<'_, Message>) + 'a;
 
 impl<'a, Message> Element<'a, Message> {
     /// Creates an empty container from ordered children.
@@ -48,7 +57,12 @@ impl<'a, Message> Element<'a, Message> {
             style: Style::default(),
             content: Content::Empty,
             children: children.into_iter().collect(),
-            message: PhantomData,
+            handlers: Vec::new(),
+            interactive: false,
+            focusable: false,
+            focus_scope: false,
+            focus_order: None,
+            cursor: None,
         }
     }
 
@@ -62,7 +76,12 @@ impl<'a, Message> Element<'a, Message> {
             style: Style::default(),
             content: Content::Text(text),
             children: Vec::new(),
-            message: PhantomData,
+            handlers: Vec::new(),
+            interactive: false,
+            focusable: false,
+            focus_scope: false,
+            focus_order: None,
+            cursor: None,
         }
     }
 
@@ -95,6 +114,59 @@ impl<'a, Message> Element<'a, Message> {
         self
     }
 
+    /// Registers an ephemeral handler for one dispatch phase.
+    #[must_use]
+    pub fn on_event(
+        mut self,
+        phase: EventPhase,
+        handler: impl Fn(&UiEvent, &mut EventContext<'_, Message>) + 'a,
+    ) -> Self {
+        self.handlers.push(EventHandler {
+            phase,
+            callback: Box::new(handler),
+        });
+        self.interactive = true;
+        self
+    }
+
+    /// Enables or disables spatial hit testing for this element.
+    #[must_use]
+    pub const fn interactive(mut self, interactive: bool) -> Self {
+        self.interactive = interactive;
+        self
+    }
+
+    /// Enables or disables keyboard focus for this element.
+    #[must_use]
+    pub const fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        if focusable {
+            self.interactive = true;
+        }
+        self
+    }
+
+    /// Marks this element as a focus scope, such as an overlay or dialog.
+    #[must_use]
+    pub const fn focus_scope(mut self, focus_scope: bool) -> Self {
+        self.focus_scope = focus_scope;
+        self
+    }
+
+    /// Sets explicit traversal order within a focus scope.
+    #[must_use]
+    pub const fn focus_order(mut self, order: i32) -> Self {
+        self.focus_order = Some(order);
+        self
+    }
+
+    /// Sets a terminal cursor intent local to this element's border box.
+    #[must_use]
+    pub const fn cursor(mut self, cursor: CursorState) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
     /// Returns explicit identity, if present.
     #[must_use]
     pub const fn explicit_key(&self) -> Option<&Key> {
@@ -123,6 +195,36 @@ impl<'a, Message> Element<'a, Message> {
     #[must_use]
     pub fn children(&self) -> &[Self] {
         &self.children
+    }
+
+    pub(crate) fn handlers(
+        &self,
+        phase: EventPhase,
+    ) -> impl Iterator<Item = &HandlerCallback<'a, Message>> {
+        self.handlers
+            .iter()
+            .filter(move |handler| handler.phase == phase)
+            .map(|handler| handler.callback.as_ref())
+    }
+
+    pub(crate) const fn is_interactive(&self) -> bool {
+        self.interactive
+    }
+
+    pub(crate) const fn is_focusable(&self) -> bool {
+        self.focusable
+    }
+
+    pub(crate) const fn is_focus_scope(&self) -> bool {
+        self.focus_scope
+    }
+
+    pub(crate) const fn explicit_focus_order(&self) -> Option<i32> {
+        self.focus_order
+    }
+
+    pub(crate) const fn cursor_intent(&self) -> Option<CursorState> {
+        self.cursor
     }
 
     pub(crate) const fn text_content(&self) -> Option<&'a str> {

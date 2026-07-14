@@ -7,6 +7,10 @@ use crate::{Invalidation, Key};
 pub enum ReconcileError {
     /// Two children of one element used the same explicit key.
     DuplicateSiblingKey(Key),
+    /// Event dispatch used a view whose identity differs from committed UI state.
+    ViewDoesNotMatchCommittedTree,
+    /// Event dispatch used a renderer state not committed with this UI tree.
+    WrongCommittedRenderer,
 }
 
 impl fmt::Display for ReconcileError {
@@ -14,6 +18,12 @@ impl fmt::Display for ReconcileError {
         match self {
             Self::DuplicateSiblingKey(key) => {
                 write!(formatter, "duplicate explicit sibling key {key:?}")
+            }
+            Self::ViewDoesNotMatchCommittedTree => {
+                formatter.write_str("event view does not match the committed retained tree")
+            }
+            Self::WrongCommittedRenderer => {
+                formatter.write_str("renderer state was not committed with this UI tree")
             }
         }
     }

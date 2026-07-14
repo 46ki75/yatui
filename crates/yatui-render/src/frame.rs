@@ -1,11 +1,17 @@
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use yatui_core::{CursorState, Point, Size, Style};
 use yatui_text::WidthPolicy;
 
 use crate::{
     Buffer, BufferError, Canvas, Cell, CellContent, DrawError, GraphemeId, GraphemeStore,
-    GraphemeStoreError, HyperlinkId,
+    GraphemeStoreError, HitMap, HyperlinkId,
 };
 
 /// Resolved content in a terminal-independent frame patch.
@@ -104,9 +110,39 @@ impl FramePatch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedFrame {
     next: Buffer,
+    hit_map: HitMap,
     cursor: CursorState,
     patch: FramePatch,
+    renderer_id: u64,
+    generation: u64,
 }
+
+/// Opaque identity for one committed renderer state.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RendererStateId {
+    renderer_id: u64,
+    generation: u64,
+}
+
+/// Failure to commit a frame against the renderer state that prepared it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitError {
+    /// The frame was prepared by another renderer instance.
+    WrongRenderer,
+    /// Renderer state advanced after this frame was prepared.
+    StaleFrame,
+}
+
+impl fmt::Display for CommitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongRenderer => formatter.write_str("frame was prepared by another renderer"),
+            Self::StaleFrame => formatter.write_str("renderer advanced after frame preparation"),
+        }
+    }
+}
+
+impl std::error::Error for CommitError {}
 
 impl PreparedFrame {
     /// Returns the terminal-independent patch for this frame.
@@ -119,6 +155,12 @@ impl PreparedFrame {
     #[must_use]
     pub const fn buffer(&self) -> &Buffer {
         &self.next
+    }
+
+    /// Returns the interactive map prepared with the logical frame.
+    #[must_use]
+    pub const fn hit_map(&self) -> &HitMap {
+        &self.hit_map
     }
 }
 
@@ -155,13 +197,33 @@ impl From<GraphemeStoreError> for RenderError {
 }
 
 /// Stateful renderer with transactional frame preparation and commit.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Renderer {
+    id: u64,
+    generation: u64,
     current: Buffer,
+    hit_map: HitMap,
     cursor: CursorState,
     graphemes: GraphemeStore,
     width_policy: WidthPolicy,
     force_full_repaint: bool,
+}
+
+static NEXT_RENDERER_ID: AtomicU64 = AtomicU64::new(1);
+
+impl Clone for Renderer {
+    fn clone(&self) -> Self {
+        Self {
+            id: next_renderer_id(),
+            generation: self.generation,
+            current: self.current.clone(),
+            hit_map: self.hit_map.clone(),
+            cursor: self.cursor,
+            graphemes: self.graphemes.clone(),
+            width_policy: self.width_policy,
+            force_full_repaint: self.force_full_repaint,
+        }
+    }
 }
 
 impl Renderer {
@@ -169,7 +231,10 @@ impl Renderer {
     #[must_use]
     pub fn new(size: Size, width_policy: WidthPolicy) -> Self {
         Self {
+            id: next_renderer_id(),
+            generation: 0,
             current: Buffer::new(size),
+            hit_map: HitMap::new(size),
             cursor: CursorState::default(),
             graphemes: GraphemeStore::new(),
             width_policy,
@@ -181,6 +246,21 @@ impl Renderer {
     #[must_use]
     pub const fn current(&self) -> &Buffer {
         &self.current
+    }
+
+    /// Returns the hit map committed with the current logical frame.
+    #[must_use]
+    pub const fn hit_map(&self) -> &HitMap {
+        &self.hit_map
+    }
+
+    /// Returns an opaque identity for the currently committed renderer state.
+    #[must_use]
+    pub const fn state_id(&self) -> RendererStateId {
+        RendererStateId {
+            renderer_id: self.id,
+            generation: self.generation,
+        }
     }
 
     /// Returns the active width policy.
@@ -208,7 +288,13 @@ impl Renderer {
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
         let mut next = Buffer::new(size);
-        let mut canvas = Canvas::new(&mut next, &mut self.graphemes, self.width_policy);
+        let mut hit_map = HitMap::new(size);
+        let mut canvas = Canvas::with_hit_map(
+            &mut next,
+            &mut self.graphemes,
+            &mut hit_map,
+            self.width_policy,
+        );
         paint(&mut canvas)?;
 
         let full_repaint = self.force_full_repaint || self.current.size() != size;
@@ -222,16 +308,28 @@ impl Renderer {
         )?;
         Ok(PreparedFrame {
             next,
+            hit_map,
             cursor,
             patch,
+            renderer_id: self.id,
+            generation: self.generation,
         })
     }
 
     /// Commits a prepared frame after its patch has been accepted for output.
-    pub fn commit(&mut self, prepared: PreparedFrame) {
+    pub fn commit(&mut self, prepared: PreparedFrame) -> Result<(), CommitError> {
+        if prepared.renderer_id != self.id {
+            return Err(CommitError::WrongRenderer);
+        }
+        if prepared.generation != self.generation {
+            return Err(CommitError::StaleFrame);
+        }
         self.current = prepared.next;
+        self.hit_map = prepared.hit_map;
         self.cursor = prepared.cursor;
         self.force_full_repaint = false;
+        self.generation = self.generation.wrapping_add(1);
+        Ok(())
     }
 
     /// Discards a prepared frame without changing committed state.
@@ -240,7 +338,12 @@ impl Renderer {
     /// Marks physical terminal state as unknown so the next patch repaints all cells.
     pub fn invalidate(&mut self) {
         self.force_full_repaint = true;
+        self.generation = self.generation.wrapping_add(1);
     }
+}
+
+fn next_renderer_id() -> u64 {
+    NEXT_RENDERER_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 fn diff(
@@ -310,7 +413,7 @@ fn resolve_cell(cell: Cell, store: &GraphemeStore) -> Result<PatchCell, Grapheme
 
 #[cfg(test)]
 mod tests {
-    use yatui_core::{Color, Point, Style};
+    use yatui_core::{Color, Point, Rect, Style};
 
     use super::*;
 
@@ -322,7 +425,7 @@ mod tests {
             Ok(())
         })?;
         assert!(first.patch().full_repaint);
-        renderer.commit(first);
+        assert_eq!(renderer.commit(first), Ok(()));
 
         let second = renderer.prepare(Size::new(3, 1), CursorState::default(), |canvas| {
             canvas.draw_text(Point::ORIGIN, "abc", Style::default(), None)?;
@@ -338,7 +441,7 @@ mod tests {
     fn changed_cells_are_grouped_into_runs() -> Result<(), RenderError> {
         let mut renderer = Renderer::new(Size::new(4, 1), WidthPolicy::Unicode);
         let initial = renderer.prepare(Size::new(4, 1), CursorState::default(), |_| Ok(()))?;
-        renderer.commit(initial);
+        assert_eq!(renderer.commit(initial), Ok(()));
 
         let changed = renderer.prepare(Size::new(4, 1), CursorState::default(), |canvas| {
             canvas.draw_text(
@@ -363,7 +466,7 @@ mod tests {
     fn discarded_frame_does_not_advance_committed_state() -> Result<(), RenderError> {
         let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
         let initial = renderer.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
-        renderer.commit(initial);
+        assert_eq!(renderer.commit(initial), Ok(()));
         let changed = renderer.prepare(Size::new(1, 1), CursorState::default(), |canvas| {
             canvas.draw_text(Point::ORIGIN, "x", Style::default(), None)?;
             Ok(())
@@ -375,6 +478,86 @@ mod tests {
             Ok(())
         })?;
         assert!(!retry.patch().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn hit_maps_commit_and_discard_with_their_frames() -> Result<(), RenderError> {
+        let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
+        let prepared = renderer.prepare(Size::new(2, 1), CursorState::default(), |canvas| {
+            let mut canvas = canvas
+                .scoped(Rect::new(0, 0, 2, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(9)));
+            canvas.draw_text(Point::ORIGIN, "界", Style::default(), None)?;
+            Ok(())
+        })?;
+
+        assert_eq!(
+            prepared.hit_map().get(Point::new(0, 0)),
+            Some(crate::HitId::new(9))
+        );
+        assert_eq!(
+            prepared.hit_map().get(Point::new(1, 0)),
+            Some(crate::HitId::new(9))
+        );
+        assert_eq!(renderer.hit_map().get(Point::ORIGIN), None);
+        renderer.discard(prepared);
+        assert_eq!(renderer.hit_map().get(Point::ORIGIN), None);
+
+        let committed = renderer.prepare(Size::new(2, 1), CursorState::default(), |canvas| {
+            let mut canvas = canvas
+                .scoped(Rect::new(0, 0, 2, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(4)));
+            canvas.draw_text(Point::ORIGIN, "x", Style::default(), None)?;
+            Ok(())
+        })?;
+        assert_eq!(renderer.commit(committed), Ok(()));
+        assert_eq!(
+            renderer.hit_map().get(Point::ORIGIN),
+            Some(crate::HitId::new(4))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn overwriting_wide_continuation_clears_the_complete_hit_span() -> Result<(), RenderError> {
+        let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
+        let prepared = renderer.prepare(Size::new(2, 1), CursorState::default(), |canvas| {
+            {
+                let mut wide = canvas
+                    .scoped(Rect::new(0, 0, 2, 1), Point::ORIGIN)
+                    .with_hit(Some(crate::HitId::new(1)));
+                wide.draw_text(Point::ORIGIN, "界", Style::default(), None)?;
+            }
+            let mut replacement = canvas
+                .scoped(Rect::new(1, 0, 1, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(2)));
+            replacement.fill(Rect::new(1, 0, 1, 1), Style::default())?;
+            Ok(())
+        })?;
+
+        assert_eq!(prepared.hit_map().get(Point::ORIGIN), None);
+        assert_eq!(
+            prepared.hit_map().get(Point::new(1, 0)),
+            Some(crate::HitId::new(2))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_cross_renderer_and_stale_commits() -> Result<(), RenderError> {
+        let mut first = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let mut second = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let wrong_renderer = first.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
+        assert_eq!(
+            second.commit(wrong_renderer),
+            Err(CommitError::WrongRenderer)
+        );
+
+        let current = first.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
+        let stale = first.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
+        assert_eq!(first.commit(current), Ok(()));
+        assert_eq!(first.commit(stale), Err(CommitError::StaleFrame));
         Ok(())
     }
 }

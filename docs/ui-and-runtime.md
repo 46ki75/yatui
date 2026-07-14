@@ -176,6 +176,13 @@ target -> parent -> root    bubble
 Global shortcuts are capture handlers on an application root, not a separate
 broadcast channel.
 
+The initial implementation invokes phase-specific handlers in this order:
+capture from root through target, target, then bubble from target through root.
+Stopping propagation skips all later handlers, including later handlers on the
+same node. Marking an event handled and preventing its default behavior do not
+stop propagation. Handler requests are applied after routing, and the last
+focus or pointer-capture request wins.
+
 ### Event Categories
 
 - Key press, repeat, and release
@@ -199,6 +206,14 @@ cell identifies the topmost interactive retained node.
 This guarantees that z-order, clipping, overlays, and hit testing agree. Mouse
 capture overrides ordinary hit testing for drag and release events.
 
+Hit maps are committed transactionally with rendered frames. UI pointer capture
+is distinct from terminal mouse-reporting mode. Hover enter and leave are
+target-only transitions recalculated from the committed hit map after a frame.
+`UiTree::prepare` stages retained state in `PreparedUiFrame`; committing through
+the tree advances UI and renderer state together. Stale, out-of-order, and
+cross-renderer commits are rejected, and dispatch accepts only the renderer
+state committed with the tree.
+
 Hover changes are recalculated after a frame when geometry or z-order changes,
 even when the mouse does not move.
 
@@ -219,6 +234,13 @@ Responsibilities include:
 
 Focus traversal uses retained tree order unless a widget supplies an explicit
 order.
+
+The deepest retained focus scope is active. Each scope keeps its focused node,
+so removing an overlay restores the previous scope's focus. Traversal wraps at
+scope boundaries; explicit order is sorted before structural order. A focused
+element may provide a local terminal cursor intent, which is translated and
+clipped to the viewport after layout. Collapsed or fully clipped descendants do
+not participate in traversal or programmatic focus.
 
 ## Commands
 

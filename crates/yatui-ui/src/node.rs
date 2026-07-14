@@ -19,6 +19,11 @@ pub struct RetainedNode {
     pub(crate) visual_style: yatui_core::Style,
     pub(crate) content_fingerprint: u64,
     pub(crate) invalidation: Invalidation,
+    pub(crate) interactive: bool,
+    pub(crate) focusable: bool,
+    pub(crate) focus_scope: bool,
+    pub(crate) focus_order: Option<i32>,
+    pub(crate) cursor_intent: Option<yatui_core::CursorState>,
 }
 
 impl RetainedNode {
@@ -56,5 +61,23 @@ impl RetainedNode {
     #[must_use]
     pub const fn invalidation(&self) -> Invalidation {
         self.invalidation
+    }
+
+    /// Returns whether this node participates in spatial hit testing.
+    #[must_use]
+    pub const fn is_interactive(&self) -> bool {
+        self.interactive
+    }
+
+    /// Returns whether this node accepts keyboard focus.
+    #[must_use]
+    pub const fn is_focusable(&self) -> bool {
+        self.focusable
+    }
+
+    /// Returns whether this node establishes a focus scope.
+    #[must_use]
+    pub const fn is_focus_scope(&self) -> bool {
+        self.focus_scope
     }
 }

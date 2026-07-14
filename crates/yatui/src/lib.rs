@@ -27,9 +27,15 @@ pub use yatui_core::{
     Color, CursorShape, CursorState, CursorVisibility, Insets, Modifier, Point, Rect, Size, Style,
 };
 pub use yatui_layout::{Dimension, LayoutStyle};
-pub use yatui_render::{Buffer, Canvas, FramePatch, PreparedFrame, Renderer};
+pub use yatui_render::{
+    Buffer, Canvas, CommitError, FramePatch, HitId, HitMap, PreparedFrame, Renderer,
+};
 pub use yatui_terminal::{
     Capabilities, TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
 };
 pub use yatui_text::{TextMetrics, WidthPolicy, grapheme_width, graphemes, measure};
-pub use yatui_ui::{Element, Invalidation, Key, NodeId, UiTree, WidgetKind};
+pub use yatui_ui::{
+    DispatchOutcome, Element, EventContext, EventPhase, FocusChange, FocusError, Invalidation, Key,
+    KeyAction, KeyModifiers, NodeId, PointerButton, PointerEvent, PointerEventKind,
+    PreparedUiFrame, UiCommitError, UiEvent, UiKey, UiKeyEvent, UiTree, WidgetKind,
+};

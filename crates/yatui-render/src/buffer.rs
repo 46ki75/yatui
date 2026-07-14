@@ -18,6 +18,13 @@ pub enum BufferError {
         /// Requested display width.
         width: u16,
     },
+    /// A parallel buffer or map has incompatible dimensions.
+    SizeMismatch {
+        /// Required dimensions.
+        expected: Size,
+        /// Supplied dimensions.
+        actual: Size,
+    },
 }
 
 impl fmt::Display for BufferError {
@@ -35,6 +42,11 @@ impl fmt::Display for BufferError {
                 formatter,
                 "grapheme of width {width} does not fit at ({}, {})",
                 point.x, point.y
+            ),
+            Self::SizeMismatch { expected, actual } => write!(
+                formatter,
+                "size {}x{} does not match required size {}x{}",
+                actual.width, actual.height, expected.width, expected.height
             ),
         }
     }

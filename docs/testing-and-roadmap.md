@@ -271,6 +271,9 @@ without retaining unsafe references.
 
 ### Milestone 5: Interaction
 
+Status: initial implementation complete. Runtime translation from terminal
+events and the standard interactive widget catalog are delivered in Milestone 6.
+
 Deliver:
 
 - Event routing

@@ -3,7 +3,9 @@ use std::fmt;
 use yatui_core::{Point, Rect, Style};
 use yatui_text::{WidthPolicy, graphemes};
 
-use crate::{Buffer, BufferError, GraphemeStore, GraphemeStoreError, HyperlinkId};
+use crate::{
+    Buffer, BufferError, CellContent, GraphemeStore, GraphemeStoreError, HitId, HitMap, HyperlinkId,
+};
 
 /// Errors produced by high-level drawing operations.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +63,8 @@ pub struct Canvas<'a> {
     clip: Rect,
     origin: Point,
     width_policy: WidthPolicy,
+    hit_map: Option<&'a mut HitMap>,
+    hit: Option<HitId>,
 }
 
 impl<'a> Canvas<'a> {
@@ -77,7 +81,20 @@ impl<'a> Canvas<'a> {
             clip,
             origin: Point::ORIGIN,
             width_policy,
+            hit_map: None,
+            hit: None,
         }
+    }
+
+    pub(crate) fn with_hit_map(
+        buffer: &'a mut Buffer,
+        store: &'a mut GraphemeStore,
+        hit_map: &'a mut HitMap,
+        width_policy: WidthPolicy,
+    ) -> Self {
+        let mut canvas = Self::new(buffer, store, width_policy);
+        canvas.hit_map = Some(hit_map);
+        canvas
     }
 
     /// Returns the active clip rectangle in buffer coordinates.
@@ -106,6 +123,13 @@ impl<'a> Canvas<'a> {
         self
     }
 
+    /// Associates subsequent successful drawing with `hit`.
+    #[must_use]
+    pub fn with_hit(mut self, hit: Option<HitId>) -> Self {
+        self.hit = hit;
+        self
+    }
+
     /// Creates a shorter-lived canvas with an additional clip and local origin.
     pub fn scoped(&mut self, clip: Rect, origin: Point) -> Canvas<'_> {
         Canvas {
@@ -114,6 +138,8 @@ impl<'a> Canvas<'a> {
             clip: self.clip.intersection(clip).unwrap_or(Rect::ZERO),
             origin,
             width_policy: self.width_policy,
+            hit_map: self.hit_map.as_deref_mut(),
+            hit: self.hit,
         }
     }
 
@@ -141,8 +167,12 @@ impl<'a> Canvas<'a> {
         }
 
         let id = self.store.intern(value)?;
+        for offset in 0..width {
+            self.clear_hit_span_at(point.translated(i32::from(offset), 0));
+        }
         self.buffer
             .set_grapheme(point, id, width, style, hyperlink)?;
+        self.mark_hit_span(point, width);
         Ok(true)
     }
 
@@ -197,11 +227,46 @@ impl<'a> Canvas<'a> {
         let mut written = 0;
         for y in rect.y..rect.bottom() {
             for x in rect.x..rect.right() {
-                self.buffer.set_empty(Point::new(x, y), style)?;
+                let point = Point::new(x, y);
+                self.clear_hit_span_at(point);
+                self.buffer.set_empty(point, style)?;
+                self.mark_hit_span(point, 1);
                 written += 1;
             }
         }
         Ok(written)
+    }
+
+    fn mark_hit_span(&mut self, point: Point, width: u16) {
+        let (Some(map), Some(hit)) = (self.hit_map.as_deref_mut(), self.hit) else {
+            return;
+        };
+        for offset in 0..width {
+            let _ = map.set(point.translated(i32::from(offset), 0), hit);
+        }
+    }
+
+    fn clear_hit_span_at(&mut self, point: Point) {
+        let Some(map) = self.hit_map.as_deref_mut() else {
+            return;
+        };
+        let span = match self.buffer.get(point).map(|cell| cell.content) {
+            Some(CellContent::Grapheme { width, .. }) => Some((point, width)),
+            Some(CellContent::Continuation { offset, .. }) => {
+                let start = point.translated(-i32::from(offset), 0);
+                match self.buffer.get(start).map(|cell| cell.content) {
+                    Some(CellContent::Grapheme { width, .. }) => Some((start, width)),
+                    _ => None,
+                }
+            }
+            Some(CellContent::Empty) => Some((point, 1)),
+            None => None,
+        };
+        if let Some((start, width)) = span {
+            for offset in 0..width {
+                let _ = map.clear(start.translated(i32::from(offset), 0));
+            }
+        }
     }
 }
 
