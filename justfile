@@ -16,6 +16,9 @@ lint:
 test:
     cargo test --workspace --all-features
 
+run-focus-queue:
+    cargo run -p arborui-example-focus-queue
+
 test-pty:
     cargo test -p arborui-backend-crossterm --test pty_lifecycle -- --ignored --test-threads=1
 

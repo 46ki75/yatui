@@ -70,6 +70,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arborui-example-focus-queue"
+version = "0.1.0"
+dependencies = [
+ "arborui",
+ "arborui-test",
+]
+
+[[package]]
 name = "arborui-layout"
 version = "0.1.0"
 dependencies = [

@@ -325,8 +325,9 @@ external async work, and can be fully tested headlessly.
 ### Milestone 7: Facade And Public Test Harness
 
 Status: implemented. The facade exports a curated prelude, `arborui-test` drives
-the real runtime and renderer through an in-memory terminal, and the counter
-workspace example verifies the downstream dependency boundary.
+the real runtime and renderer through an in-memory terminal, the counter
+workspace example verifies the downstream dependency boundary, and the Focus
+Queue pilot exercises the broader interactive application surface.
 
 Deliver:
 

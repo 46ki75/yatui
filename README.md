@@ -53,8 +53,19 @@ app.key(KeyCode::Enter);
 assert!(app.frame().characters().contains("complete"));
 ```
 
-See `examples/counter` for a complete facade-only application and downstream
-test.
+See `examples/counter` for the smallest complete facade-only application. The
+`examples/focus-queue` pilot exercises controlled text input, keyed dynamic
+rows, focus traversal, mouse scrolling, styling, deterministic commands, and
+orderly shutdown through the same public boundary.
+
+Launch the pilot in a terminal with:
+
+```console
+just run-focus-queue
+```
+
+Type a task and press Enter to add it. Tab moves between controls, Enter or
+Space activates a control, and the mouse wheel scrolls a long queue.
 
 ## Design
 
