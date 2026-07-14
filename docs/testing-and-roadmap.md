@@ -112,10 +112,10 @@ Fuzz regressions become permanent named tests.
 let mut app = TestApp::new(MyApp::default(), Size::new(80, 24));
 
 app.key(KeyCode::Enter);
-app.mouse(MouseEvent::press(10, 4));
+app.click(Point::new(10, 4));
 app.resize(Size::new(100, 30));
 
-assert_snapshot!(app.frame());
+assert_snapshot!(app.frame().characters());
 assert_eq!(app.focused_key(), Some(Key::from("submit")));
 ```
 
@@ -288,8 +288,7 @@ broadcasts or manual focus flags.
 
 ### Milestone 6: Runtime And Widgets
 
-Status: initial implementation complete. The public downstream test harness and
-application examples are delivered in Milestone 7.
+Status: implemented.
 
 Deliver:
 
@@ -305,6 +304,10 @@ Exit criterion: applications remain idle without rendering, integrate with
 external async work, and can be fully tested headlessly.
 
 ### Milestone 7: Facade And Public Test Harness
+
+Status: implemented. The facade exports a curated prelude, `yatui-test` drives
+the real runtime and renderer through an in-memory terminal, and the counter
+workspace example verifies the downstream dependency boundary.
 
 Deliver:
 

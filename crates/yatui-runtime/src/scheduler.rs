@@ -6,10 +6,10 @@ use std::{
         mpsc,
     },
     task::{Context, Poll, Wake, Waker},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use crate::command::CommandFuture;
+use crate::{Clock, command::CommandFuture};
 
 pub(crate) struct WakeSignal {
     notified: Mutex<bool>,
@@ -85,7 +85,7 @@ struct Task<Message> {
 }
 
 struct Timer<Message> {
-    deadline: Option<Instant>,
+    deadline: Duration,
     order: u64,
     message: Message,
 }
@@ -96,6 +96,7 @@ pub(crate) struct Scheduler<Message> {
     ready_sender: mpsc::Sender<u64>,
     ready_receiver: mpsc::Receiver<u64>,
     signal: Arc<WakeSignal>,
+    clock: Arc<dyn Clock>,
     timers: Vec<Timer<Message>>,
     next_timer_order: u64,
 }
@@ -106,7 +107,7 @@ pub(crate) struct PollReport {
 }
 
 impl<Message> Scheduler<Message> {
-    pub(crate) fn new(signal: Arc<WakeSignal>) -> Self {
+    pub(crate) fn new(signal: Arc<WakeSignal>, clock: Arc<dyn Clock>) -> Self {
         let (ready_sender, ready_receiver) = mpsc::channel();
         Self {
             tasks: HashMap::new(),
@@ -114,6 +115,7 @@ impl<Message> Scheduler<Message> {
             ready_sender,
             ready_receiver,
             signal,
+            clock,
             timers: Vec::new(),
             next_timer_order: 0,
         }
@@ -139,7 +141,7 @@ impl<Message> Scheduler<Message> {
     }
 
     pub(crate) fn schedule_after(&mut self, delay: Duration, message: Message) {
-        let deadline = Instant::now().checked_add(delay);
+        let deadline = self.clock.now().saturating_add(delay);
         let order = self.next_timer_order;
         self.next_timer_order = self.next_timer_order.wrapping_add(1);
         self.timers.push(Timer {
@@ -151,16 +153,15 @@ impl<Message> Scheduler<Message> {
     }
 
     pub(crate) fn poll_ready(&mut self, output: &mut Vec<Message>, limit: usize) -> PollReport {
-        let now = Instant::now();
+        let now = self.clock.now();
         let mut due = 0;
         self.timers
-            .sort_by_key(|timer| (timer.deadline.is_none(), timer.deadline, timer.order));
+            .sort_by_key(|timer| (timer.deadline, timer.order));
         while due < limit {
             if self
                 .timers
                 .first()
-                .and_then(|timer| timer.deadline)
-                .is_some_and(|deadline| deadline <= now)
+                .is_some_and(|timer| timer.deadline <= now)
             {
                 output.push(self.timers.remove(0).message);
                 due += 1;
@@ -201,12 +202,19 @@ impl<Message> Scheduler<Message> {
         !self.tasks.is_empty() || !self.timers.is_empty()
     }
 
+    pub(crate) fn has_ready_work(&self) -> bool {
+        let now = self.clock.now();
+        self.tasks
+            .values()
+            .any(|task| task.wake.queued.load(Ordering::Acquire))
+            || self.timers.iter().any(|timer| timer.deadline <= now)
+    }
+
     pub(crate) fn wait_timeout(&self, maximum: Duration) -> Duration {
-        let now = Instant::now();
+        let now = self.clock.now();
         self.timers
             .iter()
-            .filter_map(|timer| timer.deadline)
-            .map(|deadline| deadline.saturating_duration_since(now))
+            .map(|timer| timer.deadline.saturating_sub(now))
             .min()
             .map_or(maximum, |timer| timer.min(maximum))
     }

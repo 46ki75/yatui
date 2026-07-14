@@ -13,7 +13,7 @@ use yatui_terminal::{
 use yatui_ui::{Invalidation, ReconcileError, UiCommitError, UiError, UiEvent, UiTree};
 
 use crate::{
-    Application, Command, UpdateContext,
+    Application, Clock, Command, SystemClock, UpdateContext,
     command::CommandAction,
     proxy::EventProxy,
     scheduler::{Scheduler, WakeSignal},
@@ -151,10 +151,26 @@ impl<A: Application> AppRunner<A> {
     /// Creates a headless runner with an explicitly supplied renderer.
     #[must_use]
     pub fn new(application: A, viewport: Size, renderer: Renderer) -> Self {
+        Self::new_with_clock(
+            application,
+            viewport,
+            renderer,
+            Arc::new(SystemClock::new()),
+        )
+    }
+
+    /// Creates a headless runner with an explicit renderer and monotonic clock.
+    #[must_use]
+    pub fn new_with_clock(
+        application: A,
+        viewport: Size,
+        renderer: Renderer,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let wake = Arc::new(WakeSignal::new());
         let (sender, receiver) = mpsc::channel();
         let proxy = EventProxy::new(sender, Arc::clone(&wake));
-        let scheduler = Scheduler::new(Arc::clone(&wake));
+        let scheduler = Scheduler::new(Arc::clone(&wake), clock);
         Self {
             application,
             messages: VecDeque::new(),
@@ -216,6 +232,18 @@ impl<A: Application> AppRunner<A> {
         self.receive_external(MAX_WORK_PER_TURN);
         self.messages.is_empty()
             && !self.scheduler.has_tasks()
+            && self.invalidation == Invalidation::None
+    }
+
+    /// Returns whether no immediately runnable or visual work remains.
+    ///
+    /// Unlike [`is_idle`](Self::is_idle), this treats dormant futures and
+    /// timers with future deadlines as visually idle.
+    #[must_use]
+    pub fn is_visually_idle(&mut self) -> bool {
+        self.receive_external(MAX_WORK_PER_TURN);
+        self.messages.is_empty()
+            && !self.scheduler.has_ready_work()
             && self.invalidation == Invalidation::None
     }
 
@@ -702,6 +730,30 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct ManualClock {
+        elapsed: Mutex<Duration>,
+    }
+
+    impl ManualClock {
+        fn advance(&self, duration: Duration) {
+            let mut elapsed = self
+                .elapsed
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *elapsed = elapsed.saturating_add(duration);
+        }
+    }
+
+    impl Clock for ManualClock {
+        fn now(&self) -> Duration {
+            *self
+                .elapsed
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        }
+    }
+
+    #[derive(Default)]
     struct ViewApp {
         value: usize,
         views: Arc<AtomicUsize>,
@@ -879,6 +931,43 @@ mod tests {
         runner.process_pending();
 
         assert_eq!(runner.application().values, [1, 2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn injected_clock_controls_timers_and_visual_idle() -> Result<(), Box<dyn std::error::Error>> {
+        let clock = Arc::new(ManualClock::default());
+        let clock_source: Arc<dyn Clock> = clock.clone();
+        let size = Size::new(8, 2);
+        let mut runner = AppRunner::new_with_clock(
+            OrderedApp::default(),
+            size,
+            Renderer::new(size, Capabilities::default().width_policy),
+            clock_source,
+        );
+        assert_eq!(runner.render_headless()?, HeadlessRenderOutcome::Committed);
+        runner.execute(Command::after(
+            Duration::from_secs(2),
+            OrderedMessage::Value(8),
+        ));
+
+        assert!(runner.is_visually_idle());
+        assert!(!runner.is_idle());
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(runner.process_pending().updates, 0);
+        clock.advance(Duration::from_secs(1));
+        assert!(!runner.is_visually_idle());
+        assert_eq!(runner.process_pending().updates, 1);
+        assert_eq!(runner.application().values, [8]);
+        assert!(runner.is_visually_idle());
+
+        clock.advance(Duration::MAX);
+        runner.execute(Command::after(
+            Duration::from_secs(1),
+            OrderedMessage::Value(9),
+        ));
+        assert_eq!(runner.process_pending().updates, 1);
+        assert_eq!(runner.application().values, [8, 9]);
         Ok(())
     }
 

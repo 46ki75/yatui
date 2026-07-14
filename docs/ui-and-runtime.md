@@ -21,11 +21,12 @@ pub trait Application {
 Application state has one owner. Terminal events, widget actions, timers, and
 completed futures all become messages processed by `update`.
 
-An intended usage shape is:
+The facade prelude supports this application shape:
 
 ```rust
 struct Counter {
     count: usize,
+    label: String,
 }
 
 enum Message {
@@ -44,6 +45,7 @@ impl Application for Counter {
         match message {
             Message::Increment => {
                 self.count += 1;
+                self.label = format!("Count: {}", self.count);
                 context.invalidate(Invalidation::Recompose);
             }
             Message::Quit => return Command::quit(),
@@ -53,15 +55,13 @@ impl Application for Counter {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        column((
-            text(format_args!("Count: {}", self.count)),
-            button("Increment").on_press(Message::Increment),
-        ))
+        column([
+            text(&self.label),
+            button("Increment", || Message::Increment).build(),
+        ])
     }
 }
 ```
-
-The example expresses the desired ergonomics, not a finalized constructor API.
 
 ## Ephemeral Elements
 
@@ -147,9 +147,9 @@ prevents visual cells from becoming the only representation of the interface.
 Widgets are controlled by default:
 
 ```rust
-text_input(&model.query)
-    .on_change(Message::QueryChanged)
-    .on_submit(Message::Submit)
+text_input(&model.query, Message::QueryChanged)
+    .on_submit(|| Message::Submit)
+    .build()
 ```
 
 The actual mapping API must support messages containing event data without
@@ -319,6 +319,12 @@ and reports owned messages through `EventProxy`. Terminal writes commit UI,
 hit-map, and renderer state only after `WriteOutcome::Applied`; deferred frames
 are discarded, and unknown output state forces a complete repaint.
 
+Runtime timers use a monotonic `Clock`. Normal runners install `SystemClock`;
+headless harnesses supply a manual clock through `AppRunner::new_with_clock` so
+`Command::after` can be tested without sleeping. `is_visually_idle` ignores
+dormant futures and future timer deadlines while still reporting queued
+messages, ready tasks, and visual invalidation.
+
 Each scheduler turn has a finite work budget. Arrived application messages are
 processed before another bounded group of future polls, and terminal input is
 checked between saturated turns. Since terminal polling is a synchronous
@@ -349,3 +355,20 @@ and emits signed deltas. Button activation uses a repeatable message factory,
 so application messages do not need to implement `Clone`. Block painting and
 stack/scroll composition use the backend-neutral `Element` paint and layout
 contracts rather than terminal-backend types.
+
+## Public Headless Harness
+
+`yatui-test` owns an in-memory terminal and drives the same `AppRunner`, retained
+tree, renderer, and transactional write path as a real application. `TestApp`
+supports key, mouse, paste, resize, direct UI event, and external-proxy input;
+manual time advancement; and settling until no immediate visual work remains.
+
+The committed `TestFrame` exposes resolved graphemes, styles, hyperlinks, and
+cursor state. Its `Display` representation is a character snapshot, while its
+`Debug` representation retains styled-cell and continuation details. Submitted
+`FramePatch` values, focused keys, retained nodes, and hit-map results remain
+available for structural assertions.
+
+Output behavior can be scripted as deferred, state-unknown, or failed. Deferred
+and failed writes leave the committed test frame unchanged; unknown and failed
+writes require the next successful attempt to be a full repaint.

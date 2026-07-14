@@ -4,7 +4,7 @@
 //! cell-based [`render`], layout, retained [`ui`], backend-neutral
 //! [`terminal`], application [`runtime`], and controlled [`widgets`] APIs.
 //!
-//! The default `crossterm` feature exports [`CrosstermBackend`]. Disable
+//! The default `crossterm` feature exports `CrosstermBackend`. Disable
 //! default features when providing another terminal backend.
 
 /// Foundational geometry, color, style, and cursor types.
@@ -35,9 +35,9 @@ pub use yatui_render::{
     Buffer, Canvas, CommitError, FramePatch, HitId, HitMap, PreparedFrame, Renderer,
 };
 pub use yatui_runtime::{
-    AppRunner, Application, Command, DispatchReport, EventProxy, EventProxySendError,
-    HeadlessRenderError, HeadlessRenderOutcome, ProcessReport, RuntimeError, TerminalRenderOutcome,
-    UpdateContext, run, translate_terminal_event,
+    AppRunner, Application, Clock, Command, DispatchReport, EventProxy, EventProxySendError,
+    HeadlessRenderError, HeadlessRenderOutcome, ProcessReport, RuntimeError, SystemClock,
+    TerminalRenderOutcome, UpdateContext, run, translate_terminal_event,
 };
 pub use yatui_terminal::{
     Capabilities, TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
@@ -56,3 +56,15 @@ pub use yatui_widgets::{
     flexible_spacer, list, list_with_gap, row, row_with_gap, scroll_view, spacer,
     spacer_with_dimensions, stack, text_input,
 };
+
+/// Common application, layout, and widget APIs.
+pub mod prelude {
+    pub use crate::layout::{Align, FlexDirection, Justify, Position};
+    pub use crate::widgets::text;
+    pub use crate::{
+        Application, Block, Button, Color, Command, Dimension, Element, Insets, Invalidation, Key,
+        LayoutStyle, Point, ScrollView, Size, Style, TextBuffer, TextInput, UpdateContext, button,
+        column, column_with_gap, flexible_spacer, list, list_with_gap, row, row_with_gap,
+        scroll_view, spacer, spacer_with_dimensions, stack, text_input,
+    };
+}

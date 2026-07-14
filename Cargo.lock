@@ -429,6 +429,14 @@ name = "yatui-core"
 version = "0.1.0"
 
 [[package]]
+name = "yatui-example-counter"
+version = "0.1.0"
+dependencies = [
+ "yatui",
+ "yatui-test",
+]
+
+[[package]]
 name = "yatui-layout"
 version = "0.1.0"
 dependencies = [
@@ -461,6 +469,19 @@ dependencies = [
  "yatui-core",
  "yatui-render",
  "yatui-text",
+]
+
+[[package]]
+name = "yatui-test"
+version = "0.1.0"
+dependencies = [
+ "yatui-core",
+ "yatui-layout",
+ "yatui-render",
+ "yatui-runtime",
+ "yatui-terminal",
+ "yatui-text",
+ "yatui-ui",
 ]
 
 [[package]]

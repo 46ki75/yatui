@@ -1,0 +1,17 @@
+[package]
+name = "yatui-example-counter"
+description = "Counter application demonstrating the public yatui API"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yatui = { workspace = true }
+
+[dev-dependencies]
+yatui-test = { workspace = true }

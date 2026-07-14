@@ -38,7 +38,7 @@ yatui-backend-crossterm -> yatui-terminal
 yatui-ui                -> yatui-core, yatui-text, yatui-render, yatui-layout
 yatui-widgets           -> yatui-core, yatui-text, yatui-layout, yatui-ui
 yatui-runtime           -> yatui-core, yatui-ui, yatui-render, yatui-terminal
-yatui-test              -> yatui-core, yatui-ui, yatui-render,
+yatui-test              -> yatui-core, yatui-text, yatui-ui, yatui-render,
                            yatui-terminal, yatui-runtime
 yatui-macros            -> proc-macro implementation dependencies only
 yatui                    -> selected public crates
@@ -192,6 +192,7 @@ Expected modules:
 
 ```text
 app
+clock
 command
 event_loop
 proxy
@@ -230,11 +231,10 @@ lower-level crates they directly use, not on the `yatui` facade.
 Provides downstream application and widget test utilities:
 
 ```text
+app
 backend
 clock
-events
-snapshot
-test_app
+frame
 ```
 
 Internal unit tests remain in their owning crates. `yatui-test` is a public
@@ -264,19 +264,18 @@ pub use yatui_backend_crossterm::CrosstermBackend;
 
 ## Features
 
-The facade may provide these features:
+The facade initially provides one backend-selection feature:
 
 ```toml
 [features]
 default = ["crossterm"]
 crossterm = ["dep:yatui-backend-crossterm"]
-macros = ["dep:yatui-macros"]
-test-utils = ["dep:yatui-test"]
-serde = ["yatui-core/serde", "yatui-text/serde"]
 ```
 
-The `widgets`, `macros`, `test-utils`, and `serde` features are introduced only
-when their corresponding crates or implementations exist.
+`yatui-test` remains a separate development dependency so tests exercise an
+explicit public boundary without adding test utilities to application builds.
+Potential `macros` and `serde` features are introduced only when their
+implementations exist.
 
 Lower-level crates should have empty or minimal default features. Backends are
 separate crates rather than a growing collection of features in
@@ -290,7 +289,7 @@ Internal dependencies use both a path and an exact package version:
 ```toml
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "examples/*"]
 
 [workspace.package]
 version = "0.1.0"
