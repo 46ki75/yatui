@@ -15,3 +15,4 @@ arborui = { workspace = true }
 
 [dev-dependencies]
 arborui-test = { workspace = true }
+insta = { workspace = true }

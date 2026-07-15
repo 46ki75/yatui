@@ -1,0 +1,20 @@
+---
+source: examples/focus-queue/tests/focus_queue.rs
+expression: empty.frame()
+---
+┌ New task ────────────────────────────────────────────────┐
+│                                                       Add│
+└──────────────────────────────────────────────────────────┘
+                                                            
+┌ Focus queue ─────────────────────────────────────────────┐
+│No tasks yet. Type one above and press Enter.             │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+                                                            
+┌ Focus timer ─────────────────────────────────────────────┐
+│25:00  0 open / 0 complete    Start  Reset                │
+└──────────────────────────────────────────────────────────┘
+                                                            
+Tab focus | Enter activate | Wheel scroll               Quit

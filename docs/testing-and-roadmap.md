@@ -125,7 +125,7 @@ app.key(KeyCode::Enter);
 app.click(Point::new(10, 4));
 app.resize(Size::new(100, 30));
 
-assert_snapshot!(app.frame().characters());
+insta::assert_snapshot!("submitted", app.frame());
 assert_eq!(app.focused_key(), Some(Key::from("submit")));
 ```
 
@@ -144,6 +144,46 @@ The harness supports:
 
 Snapshots are a supplement to structural assertions, not a replacement for
 them.
+
+### Snapshot Testing Rules
+
+Add a snapshot when a feature or bug fix introduces a materially distinct,
+deterministic visual state. Prefer snapshots for complete frames whose layout,
+text, clipping, scrolling, or Unicode behavior would be difficult to review as
+an inline string. Do not use snapshots for model logic, single values, every
+intermediate key press, nondeterministic output, or large combinatorial state
+matrices.
+
+Use the narrowest representation that covers the contract:
+
+- Character snapshots are the default for visible application behavior.
+- Styled-cell snapshots are reserved for color, modifiers, focus indication,
+  and cursor styling.
+- Frame-patch snapshots are reserved for renderer transactions and performance
+  contracts.
+- Structural assertions cover model state, focus identity, hit testing, cursor
+  coordinates, and event behavior.
+
+Each application or substantial widget should normally have one initial-state
+snapshot, one for each materially distinct visual state, and a relevant
+boundary state such as empty, overflow, narrow viewport, or Unicode. Avoid
+snapshots that differ only by an unimportant character.
+
+Every snapshot test must use an explicit terminal size, deterministic time and
+input, a stable explicit name, and public setup APIs. Include a semantic
+assertion that explains why the state matters, and snapshot only after the
+application reaches visual idle.
+
+Snapshot files are committed and reviewed like source. Intentional visual
+changes update their snapshots in the same pull request. Unexpected changes
+require an implementation fix rather than blind acceptance. CI sets
+`INSTA_UPDATE=no`, and generated `.snap.new` files are never committed. Install
+the matching review tool and inspect pending snapshots locally with:
+
+```console
+cargo install cargo-insta --version 1.48.0 --locked
+just snapshot-review
+```
 
 ## PTY Integration Tests
 

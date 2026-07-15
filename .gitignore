@@ -3,5 +3,6 @@
 /node_modules/
 /target/
 
+*.snap.new
 .DS_Store
 .idea/

@@ -16,6 +16,9 @@ lint:
 test:
     cargo test --workspace --all-features
 
+snapshot-review:
+    cargo insta review
+
 run-focus-queue:
     cargo run -p arborui-example-focus-queue
 

@@ -1,0 +1,9 @@
+---
+source: examples/counter/tests/counter.rs
+expression: app.frame()
+---
+Count: 1        
+                
+Increment       
+                
+Quit

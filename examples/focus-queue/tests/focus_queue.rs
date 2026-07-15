@@ -22,6 +22,42 @@ fn focused_label(frame: &TestFrame) -> String {
 }
 
 #[test]
+fn representative_frames_match_snapshots() {
+    let empty = TestApp::new(FocusQueue::default(), Size::new(60, 16));
+    assert_eq!(empty.application().task_count(), 0);
+    insta::assert_snapshot!("focus_queue_empty", empty.frame());
+
+    let mut task = TestApp::new(FocusQueue::default(), Size::new(60, 16));
+    task.paste("Write pilot notes");
+    task.key(KeyCode::Enter);
+    assert_eq!(task.application().task_count(), 1);
+    insta::assert_snapshot!("focus_queue_task_added", task.frame());
+
+    task.key(KeyCode::Tab);
+    task.key(KeyCode::Tab);
+    task.key(KeyCode::Enter);
+    assert_eq!(task.application().task_completed(0), Some(true));
+    insta::assert_snapshot!("focus_queue_task_completed", task.frame());
+
+    let mut scrolled = TestApp::new(FocusQueue::default(), Size::new(60, 16));
+    for index in 1..=8 {
+        scrolled.send(Message::DraftChanged(TextBuffer::new(format!(
+            "Task {index}"
+        ))));
+        scrolled.send(Message::AddTask);
+    }
+    let scroll_down = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        position: Point::new(2, 6),
+        modifiers: KeyModifiers::NONE,
+    };
+    scrolled.mouse(scroll_down);
+    scrolled.mouse(scroll_down);
+    assert_eq!(scrolled.application().scroll_y(), 2);
+    insta::assert_snapshot!("focus_queue_scrolled", scrolled.frame());
+}
+
+#[test]
 fn first_typed_character_is_visible_in_the_input() {
     let mut app = TestApp::new(FocusQueue::default(), Size::new(60, 16));
 
