@@ -245,6 +245,10 @@ element may provide a local terminal cursor intent, which is translated and
 clipped to the viewport after layout. Collapsed or fully clipped descendants do
 not participate in traversal or programmatic focus.
 
+`Element::focus_style` applies an inheritable visual overlay while that element
+owns retained focus. Standard buttons use reverse video across their complete
+label by default; editable text inputs continue to expose a bar cursor.
+
 ## Commands
 
 `Command<Message>` is an opaque public type with constructors rather than a

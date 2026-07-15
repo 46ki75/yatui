@@ -31,6 +31,7 @@ pub struct Element<'a, Message> {
     kind: WidgetKind,
     layout: LayoutStyle,
     style: Style,
+    focus_style: Style,
     content: Content<'a>,
     children: Vec<Self>,
     handlers: Vec<EventHandler<'a, Message>>,
@@ -68,6 +69,7 @@ impl<'a, Message> Element<'a, Message> {
             kind: WidgetKind::Container,
             layout: LayoutStyle::default(),
             style: Style::default(),
+            focus_style: Style::default(),
             content: Content::Empty,
             children: children.into_iter().collect(),
             handlers: Vec::new(),
@@ -95,6 +97,7 @@ impl<'a, Message> Element<'a, Message> {
             kind: WidgetKind::Text,
             layout: LayoutStyle::default(),
             style: Style::default(),
+            focus_style: Style::default(),
             content: Content::Text(text),
             children: Vec::new(),
             handlers: Vec::new(),
@@ -140,6 +143,16 @@ impl<'a, Message> Element<'a, Message> {
     #[must_use]
     pub const fn style(mut self, style: Style) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Assigns visual styling while this element owns keyboard focus.
+    ///
+    /// Focus styling combines with the normal style and is inherited by this
+    /// element's descendants using normal style inheritance rules.
+    #[must_use]
+    pub const fn focus_style(mut self, style: Style) -> Self {
+        self.focus_style = style;
         self
     }
 
@@ -278,6 +291,10 @@ impl<'a, Message> Element<'a, Message> {
     #[must_use]
     pub const fn visual_style(&self) -> Style {
         self.style
+    }
+
+    pub(crate) const fn focused_style(&self) -> Style {
+        self.focus_style
     }
 
     /// Returns ordered child declarations.

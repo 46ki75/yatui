@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt};
 
-use arborui_core::{CursorState, CursorVisibility, Point, Rect, Size};
+use arborui_core::{CursorState, CursorVisibility, Point, Rect, Size, Style};
 use arborui_layout::{LayoutError, LayoutNodeId, LayoutTree};
 use arborui_render::{
     Buffer, Canvas, CommitError, DrawError, FramePatch, HitId, HitMap, PreparedFrame, RenderError,
@@ -117,6 +117,14 @@ pub struct PreparedUiFrame {
     frame: PreparedFrame,
     tree: UiTree,
     base_revision: u64,
+}
+
+#[derive(Clone, Copy)]
+struct PaintContext {
+    clip: Rect,
+    hit: Option<HitId>,
+    style: Style,
+    focused: Option<NodeId>,
 }
 
 impl PreparedUiFrame {
@@ -554,14 +562,19 @@ impl UiTree {
             .map(|(_, retained, element)| (*retained, *element))
             .collect::<HashMap<_, _>>();
         let cursor = self.resolve_cursor(&by_retained, viewport, width_policy);
+        let focused = self.focused();
 
         let prepared = renderer.prepare(viewport, cursor, |canvas| {
             self.paint_node(
                 root,
                 element,
                 canvas,
-                Rect::from_origin_size(Point::ORIGIN, viewport),
-                None,
+                PaintContext {
+                    clip: Rect::from_origin_size(Point::ORIGIN, viewport),
+                    hit: None,
+                    style: Style::default(),
+                    focused,
+                },
             )
         })?;
         self.pending = Invalidation::None;
@@ -609,7 +622,9 @@ impl UiTree {
                     || retained.content_fingerprint != fingerprint
                 {
                     requested.request(Invalidation::Layout);
-                } else if retained.visual_style != element.visual_style() {
+                } else if retained.visual_style != element.visual_style()
+                    || retained.focus_style != element.focused_style()
+                {
                     requested.request(Invalidation::Paint);
                 }
                 if retained.interactive != element.is_interactive()
@@ -634,6 +649,7 @@ impl UiTree {
                 }
                 retained.layout_style = element.layout_style();
                 retained.visual_style = element.visual_style();
+                retained.focus_style = element.focused_style();
                 retained.content_fingerprint = fingerprint;
                 retained.interactive = element.is_interactive();
                 retained.focusable = element.is_focusable();
@@ -703,6 +719,7 @@ impl UiTree {
                 content: Rect::ZERO,
                 layout_style: element.layout_style(),
                 visual_style: element.visual_style(),
+                focus_style: element.focused_style(),
                 content_fingerprint: content_fingerprint(element),
                 invalidation: Invalidation::Recompose,
                 interactive: element.is_interactive(),
@@ -793,27 +810,33 @@ impl UiTree {
         retained: NodeId,
         element: &Element<'_, Message>,
         canvas: &mut Canvas<'_>,
-        inherited_clip: Rect,
-        inherited_hit: Option<HitId>,
+        inherited: PaintContext,
     ) -> Result<(), DrawError> {
         let node = self
             .nodes
             .get(&retained)
             .expect("element and retained tree have matching structure");
-        let clip = inherited_clip
+        let clip = inherited
+            .clip
             .intersection(node.layout)
             .unwrap_or(Rect::ZERO);
+        let style = inherit_style(inherited.style, node.visual_style);
+        let style = if inherited.focused == Some(retained) {
+            inherit_style(style, node.focus_style)
+        } else {
+            style
+        };
         let hit = if element.is_interactive() {
             Some(HitId::new(retained.0))
         } else {
-            inherited_hit
+            inherited.hit
         };
         {
             let mut scoped = canvas.scoped(clip, node.layout.origin()).with_hit(hit);
             if element.fills_background() {
                 scoped.fill(
                     Rect::new(0, 0, node.layout.width, node.layout.height),
-                    element.visual_style(),
+                    style,
                 )?;
             }
             if let Some(text) = element.text_content() {
@@ -822,13 +845,23 @@ impl UiTree {
                     node.content.y.saturating_sub(node.layout.y),
                 );
                 let mut text_canvas = scoped.scoped(node.content, node.layout.origin());
-                text_canvas.draw_text(text_origin, text, element.visual_style(), None)?;
+                text_canvas.draw_text(text_origin, text, style, None)?;
             }
             element.paint_content(node.layout.size(), &mut scoped)?;
         }
         let children_clip = clip.intersection(node.content).unwrap_or(Rect::ZERO);
         for (child, element) in node.children.iter().zip(element.children()) {
-            self.paint_node(*child, element, canvas, children_clip, hit)?;
+            self.paint_node(
+                *child,
+                element,
+                canvas,
+                PaintContext {
+                    clip: children_clip,
+                    hit,
+                    style,
+                    focused: inherited.focused,
+                },
+            )?;
         }
         Ok(())
     }
@@ -1082,9 +1115,18 @@ fn saturating_u16(value: usize) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
 }
 
+fn inherit_style(inherited: Style, local: Style) -> Style {
+    Style {
+        foreground: local.foreground.or(inherited.foreground),
+        background: local.background.or(inherited.background),
+        underline_color: local.underline_color.or(inherited.underline_color),
+        modifiers: inherited.modifiers | local.modifiers,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use arborui_core::{Color, CursorShape, Size, Style};
+    use arborui_core::{Color, CursorShape, Modifier, Size, Style};
     use arborui_layout::{Dimension, FlexDirection, LayoutStyle};
     use arborui_render::PatchCellContent;
     use arborui_text::WidthPolicy;
@@ -1209,6 +1251,17 @@ mod tests {
         tree.pending = Invalidation::None;
         let report = tree.reconcile(
             &Element::<()>::text("longer").style(Style::new().foreground(Color::Blue)),
+        )?;
+        assert_eq!(report.invalidation, Invalidation::Paint);
+
+        tree.pending = Invalidation::None;
+        for node in tree.nodes.values_mut() {
+            node.invalidation = Invalidation::None;
+        }
+        let report = tree.reconcile(
+            &Element::<()>::text("longer")
+                .style(Style::new().foreground(Color::Blue))
+                .focus_style(Style::new().add_modifiers(Modifier::REVERSED)),
         )?;
         assert_eq!(report.invalidation, Invalidation::Paint);
         Ok(())

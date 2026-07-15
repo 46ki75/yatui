@@ -2,11 +2,24 @@
 
 use std::time::Duration;
 
-use arborui::{Point, TextBuffer};
+use arborui::{CursorShape, CursorVisibility, Modifier, Point, TextBuffer};
 use arborui_example_focus_queue::{FocusQueue, Message};
 use arborui_test::{
     Key, KeyCode, KeyModifiers, MouseEvent, MouseEventKind, Size, TestApp, TestCellContent,
+    TestFrame,
 };
+
+fn focused_label(frame: &TestFrame) -> String {
+    frame
+        .cells()
+        .iter()
+        .filter(|cell| cell.style.modifiers.contains(Modifier::REVERSED))
+        .filter_map(|cell| match &cell.content {
+            TestCellContent::Grapheme { text, .. } => Some(text.as_ref()),
+            TestCellContent::Empty | TestCellContent::Continuation { .. } => None,
+        })
+        .collect()
+}
 
 #[test]
 fn first_typed_character_is_visible_in_the_input() {
@@ -19,6 +32,26 @@ fn first_typed_character_is_visible_in_the_input() {
         app.frame().cell(Point::new(1, 1)).map(|cell| &cell.content),
         Some(TestCellContent::Grapheme { text, .. }) if text.as_ref() == "m"
     ));
+}
+
+#[test]
+fn tab_focus_is_visible_on_buttons() {
+    let mut app = TestApp::new(FocusQueue::default(), Size::new(60, 16));
+
+    let input_cursor = app.frame().cursor();
+    assert_eq!(input_cursor.visibility, CursorVisibility::Visible);
+    assert_eq!(input_cursor.shape, CursorShape::Bar);
+
+    app.key(KeyCode::Tab);
+
+    assert_eq!(app.focused_key(), Some(Key::from("add-task")));
+    assert_eq!(app.frame().cursor().visibility, CursorVisibility::Hidden);
+    assert_eq!(focused_label(app.frame()), "Add");
+
+    app.key(KeyCode::Tab);
+
+    assert_eq!(app.focused_key(), Some(Key::from("timer-toggle")));
+    assert_eq!(focused_label(app.frame()), "Start");
 }
 
 #[test]

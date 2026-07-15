@@ -400,7 +400,7 @@ impl Application for FocusQueue {
 
         let footer = row_with_gap(
             [
-                text("Tab move | Enter activate | Wheel scroll")
+                text("Tab focus | Enter activate | Wheel scroll")
                     .style(Style::new().foreground(Color::BrightBlack)),
                 flexible_spacer(),
                 button("Quit", || Message::Quit)

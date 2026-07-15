@@ -1,4 +1,4 @@
-use arborui_core::Style;
+use arborui_core::{Modifier, Style};
 use arborui_layout::LayoutStyle;
 use arborui_ui::{Element, EventPhase, KeyAction, PointerButton, PointerEventKind, UiEvent, UiKey};
 
@@ -23,6 +23,7 @@ pub struct Button<'a, Message> {
     on_press: Box<dyn Fn() -> Message + 'a>,
     style: Style,
     label_style: Style,
+    focus_style: Style,
     layout: LayoutStyle,
     focus_order: Option<i32>,
 }
@@ -36,6 +37,7 @@ impl<'a, Message: 'a> Button<'a, Message> {
             on_press: Box::new(on_press),
             style: Style::default(),
             label_style: Style::default(),
+            focus_style: Style::new().add_modifiers(Modifier::REVERSED),
             layout: LayoutStyle::default(),
             focus_order: None,
         }
@@ -52,6 +54,13 @@ impl<'a, Message: 'a> Button<'a, Message> {
     #[must_use]
     pub const fn label_style(mut self, style: Style) -> Self {
         self.label_style = style;
+        self
+    }
+
+    /// Sets the style applied while the button owns keyboard focus.
+    #[must_use]
+    pub const fn focus_style(mut self, style: Style) -> Self {
+        self.focus_style = style;
         self
     }
 
@@ -79,6 +88,7 @@ impl<'a, Message: 'a> Button<'a, Message> {
         )
         .layout(self.layout)
         .style(self.style)
+        .focus_style(self.focus_style)
         .focusable(true)
         .on_event(EventPhase::Target, move |event, context| match event {
             UiEvent::Pointer(pointer)

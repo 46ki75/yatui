@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use arborui_core::{CursorVisibility, Point, Size};
+use arborui_core::{CursorVisibility, Modifier, Point, Size};
 use arborui_layout::{Dimension, LayoutStyle};
 use arborui_render::{FramePatch, PatchCellContent, Renderer};
 use arborui_text::{TextBuffer, TextEdit, TextMovement, WidthPolicy};
@@ -117,7 +117,17 @@ fn button_activates_on_pointer_press_and_keys() -> Result<(), Box<dyn Error>> {
         .build();
     let mut tree = UiTree::new();
     let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
-    prepare_and_commit(&mut tree, &view, Size::new(2, 1), &mut renderer)?;
+    let prepared = tree.prepare(&view, Size::new(2, 1), &mut renderer)?;
+    assert_eq!(prepared.patch().cursor.visibility, CursorVisibility::Hidden);
+    for x in 0..2 {
+        assert!(
+            prepared
+                .buffer()
+                .get(Point::new(x, 0))
+                .is_some_and(|cell| cell.style.modifiers.contains(Modifier::REVERSED))
+        );
+    }
+    tree.commit(prepared, &mut renderer)?;
 
     let down = tree.dispatch(
         &view,

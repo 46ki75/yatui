@@ -18,6 +18,7 @@ pub struct RetainedNode {
     pub(crate) content: Rect,
     pub(crate) layout_style: LayoutStyle,
     pub(crate) visual_style: arborui_core::Style,
+    pub(crate) focus_style: arborui_core::Style,
     pub(crate) content_fingerprint: u64,
     pub(crate) paint_fingerprint: u64,
     pub(crate) invalidation: Invalidation,
