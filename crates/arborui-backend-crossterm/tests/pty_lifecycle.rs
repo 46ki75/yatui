@@ -52,9 +52,37 @@ fn restores_terminal_modes_in_native_pty() -> Result<(), Box<dyn Error>> {
     command.env("TERM", "xterm-256color");
 
     let mut reader = pair.master.try_clone_reader()?;
-    let output_thread = thread::spawn(move || {
+    #[cfg(windows)]
+    let mut responder = pair.master.take_writer()?;
+    let output_thread = thread::spawn(move || -> io::Result<Vec<u8>> {
         let mut output = Vec::new();
-        reader.read_to_end(&mut output).map(|_| output)
+        let mut buffer = [0; 1024];
+        #[cfg(windows)]
+        let mut search_from = 0;
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            output.extend_from_slice(&buffer[..count]);
+
+            #[cfg(windows)]
+            {
+                // ConPTY expects its host terminal emulator to answer cursor queries.
+                const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
+                while let Some(position) = output[search_from..]
+                    .windows(CURSOR_POSITION_QUERY.len())
+                    .position(|window| window == CURSOR_POSITION_QUERY)
+                {
+                    search_from += position + CURSOR_POSITION_QUERY.len();
+                    responder.write_all(b"\x1b[1;1R")?;
+                    responder.flush()?;
+                }
+                search_from =
+                    search_from.max(output.len().saturating_sub(CURSOR_POSITION_QUERY.len() - 1));
+            }
+        }
+        Ok(output)
     });
     let mut child = pair.slave.spawn_command(command)?;
     drop(pair.slave);

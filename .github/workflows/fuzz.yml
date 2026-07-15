@@ -43,7 +43,7 @@ jobs:
           workspaces: fuzz
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --version 0.13.2 --locked
+        run: cargo +nightly-2026-07-01 install cargo-fuzz --version 0.13.2 --locked
 
       - name: Run bounded fuzzing
         run: >-
