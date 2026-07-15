@@ -781,6 +781,7 @@ mod tests {
     enum ViewMessage {
         Increment,
         Invalidate(Invalidation),
+        Quit,
     }
 
     impl Application for ViewApp {
@@ -794,6 +795,7 @@ mod tests {
             match message {
                 ViewMessage::Increment => self.value += 1,
                 ViewMessage::Invalidate(invalidation) => context.invalidate(invalidation),
+                ViewMessage::Quit => return Command::quit(),
             }
             Command::none()
         }
@@ -865,6 +867,50 @@ mod tests {
 
     struct DualFailureBackend {
         capabilities: Capabilities,
+    }
+
+    struct ResumeCleanupFailureBackend {
+        capabilities: Capabilities,
+        sizes: Arc<AtomicUsize>,
+        apply_calls: usize,
+        restore_calls: usize,
+    }
+
+    impl TerminalBackend for ResumeCleanupFailureBackend {
+        type Error = io::Error;
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            self.sizes.fetch_add(1, Ordering::Relaxed);
+            Ok(Size::new(8, 2))
+        }
+
+        fn capabilities(&self) -> &Capabilities {
+            &self.capabilities
+        }
+
+        fn poll_event(&mut self, _timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
+            Ok(None)
+        }
+
+        fn apply_state(&mut self, _desired: &TerminalState) -> Result<(), Self::Error> {
+            self.apply_calls += 1;
+            if self.apply_calls == 2 {
+                return Err(io::Error::other("injected resume failure"));
+            }
+            Ok(())
+        }
+
+        fn write_patch(&mut self, _patch: &FramePatch) -> Result<WriteOutcome, Self::Error> {
+            Ok(WriteOutcome::Applied)
+        }
+
+        fn restore(&mut self) -> Result<(), Self::Error> {
+            self.restore_calls += 1;
+            if self.restore_calls == 2 {
+                return Err(io::Error::other("injected cleanup failure"));
+            }
+            Ok(())
+        }
     }
 
     impl TerminalBackend for DualFailureBackend {
@@ -1094,6 +1140,38 @@ mod tests {
         let state = state.lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(state.patches.len(), 3);
         assert!(state.patches.iter().all(|patch| patch.full_repaint));
+        Ok(())
+    }
+
+    #[test]
+    fn failed_resume_and_cleanup_does_not_busy_loop_run_terminal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sizes = Arc::new(AtomicUsize::new(0));
+        let backend = ResumeCleanupFailureBackend {
+            capabilities: Capabilities::default(),
+            sizes: Arc::clone(&sizes),
+            apply_calls: 0,
+            restore_calls: 0,
+        };
+        let mut terminal = TerminalSession::open(backend, TerminalState::fullscreen())?;
+        terminal.suspend()?;
+        assert!(terminal.resume().is_err());
+
+        let mut runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
+        let proxy = runner.event_proxy();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            proxy.send(ViewMessage::Quit).is_ok()
+        });
+
+        runner.run_terminal(&mut terminal, Duration::from_secs(1))?;
+        assert!(sender.join().unwrap_or(false));
+        let size_calls = sizes.load(Ordering::Relaxed);
+        assert!(
+            size_calls <= 2,
+            "a suspended session awaiting cleanup must block instead of repeatedly preparing \
+             deferred frames; observed {size_calls} terminal size calls"
+        );
         Ok(())
     }
 

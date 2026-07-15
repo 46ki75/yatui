@@ -398,6 +398,30 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct BufferedFailFlushOnce {
+        pending: Vec<u8>,
+        flushed: Vec<u8>,
+        flushes: usize,
+        fail_on_flush: usize,
+    }
+
+    impl Write for BufferedFailFlushOnce {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.pending.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            if self.flushes == self.fail_on_flush {
+                return Err(io::Error::other("injected flush failure"));
+            }
+            self.flushed.append(&mut self.pending);
+            Ok(())
+        }
+    }
+
     #[test]
     fn empty_patch_does_not_update_tracked_cursor_state() -> io::Result<()> {
         let mut backend = CrosstermBackend::new(Vec::new())?;
@@ -476,6 +500,42 @@ mod tests {
         assert_eq!(backend.active.screen, ScreenMode::Alternate);
         backend.restore()?;
         assert_eq!(backend.active, TerminalState::default());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_restore_flush_requires_screen_mode_reapplication() -> io::Result<()> {
+        let writer = BufferedFailFlushOnce {
+            fail_on_flush: 2,
+            ..BufferedFailFlushOnce::default()
+        };
+        let mut backend = CrosstermBackend::new(writer)?;
+        let desired = TerminalState {
+            screen: ScreenMode::Alternate,
+            ..TerminalState::default()
+        };
+        backend.apply_state(&desired)?;
+
+        assert!(backend.restore().is_err());
+        backend.apply_state(&desired)?;
+
+        let enter_alternate: &[u8] = b"\x1b[?1049h";
+        let leave_alternate: &[u8] = b"\x1b[?1049l";
+        let last_enter = backend
+            .writer
+            .flushed
+            .windows(enter_alternate.len())
+            .rposition(|window| window == enter_alternate);
+        let last_leave = backend
+            .writer
+            .flushed
+            .windows(leave_alternate.len())
+            .rposition(|window| window == leave_alternate);
+        assert!(
+            matches!((last_enter, last_leave), (Some(enter), Some(leave)) if enter > leave),
+            "a failed restore flush leaves a queued leave-alternate-screen sequence, so the \
+             tracked screen mode must be invalidated and re-entered before output resumes"
+        );
         Ok(())
     }
 

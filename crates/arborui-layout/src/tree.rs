@@ -311,4 +311,25 @@ mod tests {
         assert_eq!(tree.layout(child)?.bounds.width, 13);
         Ok(())
     }
+
+    #[test]
+    fn replacing_dynamic_children_does_not_retain_detached_nodes() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let root = tree.add(LayoutStyle::default());
+
+        for width in 1..=8 {
+            let child =
+                tree.add(LayoutStyle::new().size(Dimension::cells(width), Dimension::cells(1)));
+            tree.set_children(root, &[child])?;
+            tree.compute(root, Size::new(8, 1), |_, _| Size::ZERO)?;
+        }
+
+        assert_eq!(tree.children(root)?.len(), 1);
+        assert_eq!(
+            tree.nodes.len(),
+            2,
+            "only the root and its current dynamic child should remain retained"
+        );
+        Ok(())
+    }
 }

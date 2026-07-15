@@ -182,7 +182,7 @@ mod tests {
     use arborui_core::{Color, Size, Style};
 
     use super::*;
-    use crate::GraphemeId;
+    use crate::{Cell, GraphemeId};
 
     #[test]
     fn higher_surfaces_overwrite_lower_surfaces() -> Result<(), BufferError> {
@@ -261,6 +261,46 @@ mod tests {
         Compositor::compose_with_hits(&mut target, &mut target_hits, &[lower, upper])?;
 
         assert_eq!(target_hits.get(Point::ORIGIN), None);
+        Ok(())
+    }
+
+    #[test]
+    fn opaque_surface_blocks_lower_cell_and_hit_when_clip_cuts_wide_grapheme()
+    -> Result<(), BufferError> {
+        let mut lower_buffer = Buffer::new(Size::new(2, 1));
+        lower_buffer.set_grapheme(
+            Point::ORIGIN,
+            GraphemeId::from_test_value(1),
+            1,
+            Style::default(),
+            None,
+        )?;
+        let mut lower_hits = HitMap::new(Size::new(2, 1));
+        let _ = lower_hits.set(Point::ORIGIN, crate::HitId::new(1));
+        let lower = Surface::new(lower_buffer).with_hit_map(lower_hits);
+
+        let fallback_style = Style::new().background(Color::Blue);
+        let mut upper_buffer = Buffer::new(Size::new(2, 1));
+        upper_buffer.set_grapheme(
+            Point::ORIGIN,
+            GraphemeId::from_test_value(2),
+            2,
+            fallback_style,
+            None,
+        )?;
+        let mut upper = Surface::new(upper_buffer);
+        upper.clip = Rect::new(0, 0, 1, 1);
+        upper.opacity = Opacity::Opaque;
+        upper.z_index = 1;
+
+        let mut target = Buffer::new(Size::new(2, 1));
+        let mut target_hits = HitMap::new(Size::new(2, 1));
+        Compositor::compose_with_hits(&mut target, &mut target_hits, &[lower, upper])?;
+
+        assert_eq!(
+            (target.get(Point::ORIGIN), target_hits.get(Point::ORIGIN)),
+            (Some(&Cell::empty(fallback_style)), None)
+        );
         Ok(())
     }
 }

@@ -1132,7 +1132,7 @@ mod tests {
     use arborui_text::WidthPolicy;
 
     use super::*;
-    use crate::{Key, PointerEvent};
+    use crate::{Key, PointerEvent, WidgetKind};
 
     fn keyed_text(key: u64, text: &str) -> Element<'_, ()> {
         Element::text(text).key(key)
@@ -1319,6 +1319,42 @@ mod tests {
         assert_eq!(
             tree.commit(prepared, &mut renderer),
             Err(UiCommitError::StaleTree)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_commit_of_frame_prepared_by_another_ui_tree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target_view = Element::<()>::container([Element::text("target")]).key(1_u64);
+        let foreign_view = Element::<()>::text("foreign").key(2_u64);
+        let mut target = UiTree::new();
+        let mut foreign = UiTree::new();
+        target.reconcile(&target_view)?;
+        foreign.reconcile(&foreign_view)?;
+        assert_eq!(target.revision, foreign.revision);
+
+        let mut renderer = Renderer::new(Size::new(7, 1), WidthPolicy::Unicode);
+        let renderer_state = renderer.state_id();
+        let prepared = foreign.prepare(&foreign_view, Size::new(7, 1), &mut renderer)?;
+        let target_root = target.root().expect("target root exists");
+
+        assert!(
+            target.commit(prepared, &mut renderer).is_err(),
+            "a prepared frame must only commit to the UiTree that prepared it"
+        );
+        assert_eq!(renderer.state_id(), renderer_state);
+        assert_eq!(target.len(), 2);
+        assert_eq!(
+            target.node(target_root).expect("target root remains").key(),
+            Some(&Key::Integer(1))
+        );
+        assert_eq!(
+            target
+                .node(target_root)
+                .expect("target root remains")
+                .kind(),
+            WidgetKind::Container
         );
         Ok(())
     }
