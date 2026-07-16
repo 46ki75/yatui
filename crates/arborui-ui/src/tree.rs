@@ -10,10 +10,10 @@ use arborui_text::measure;
 
 use crate::{
     DispatchOutcome, Element, EventContext, EventPhase, FocusChange, FocusError, Invalidation, Key,
-    KeyAction, NodeId, PointerEventKind, ReconcileError, ReconcileReport, RetainedNode, UiEvent,
-    UiKey,
+    KeyAction, NodeId, PointerButton, PointerEventKind, ReconcileError, ReconcileReport,
+    RetainedNode, UiEvent, UiKey,
     event::{DispatchState, EventRequest},
-    focus::FocusManager,
+    focus::{FocusManager, is_effectively_visible},
 };
 
 /// Errors produced by the headless UI pipeline.
@@ -109,6 +109,7 @@ pub struct UiTree {
     viewport: Option<Size>,
     focus: FocusManager,
     captured_pointer: Option<NodeId>,
+    suppressed_pointer_buttons: u8,
     hovered: Option<NodeId>,
     last_pointer: Option<Point>,
     pending_focus_change: Option<FocusChange>,
@@ -148,6 +149,16 @@ struct PaintContext {
     hit: Option<HitId>,
     style: Style,
     focused: Option<NodeId>,
+}
+
+const ALL_POINTER_BUTTONS: u8 = 0b111;
+
+const fn pointer_button_mask(button: PointerButton) -> u8 {
+    match button {
+        PointerButton::Primary => 1,
+        PointerButton::Secondary => 1 << 1,
+        PointerButton::Middle => 1 << 2,
+    }
 }
 
 impl PreparedUiFrame {
@@ -355,24 +366,50 @@ impl UiTree {
         let mut elements = HashMap::with_capacity(self.nodes.len());
         self.collect_elements(root, element, &mut elements);
 
+        if let Some(pointer) = event.pointer() {
+            let suppressed = match pointer.kind {
+                PointerEventKind::Drag(button) | PointerEventKind::Up(button) => {
+                    self.suppressed_pointer_buttons & pointer_button_mask(button) != 0
+                }
+                PointerEventKind::Down(button) => {
+                    self.suppressed_pointer_buttons &= !pointer_button_mask(button);
+                    false
+                }
+                PointerEventKind::Moved
+                | PointerEventKind::Scroll(_)
+                | PointerEventKind::ScrollHorizontal(_) => false,
+            };
+            if suppressed {
+                self.last_pointer = Some(pointer.position);
+                if let PointerEventKind::Up(button) = pointer.kind {
+                    self.suppressed_pointer_buttons &= !pointer_button_mask(button);
+                }
+                let mut state = DispatchState::new();
+                state.handled = true;
+                state.default_prevented = true;
+                self.update_hover(pointer.position, hit_map, &elements, &mut state);
+                return Ok(DispatchOutcome::from_state(None, state));
+            }
+        }
+
         let target = if let Some(pointer) = event.pointer() {
             self.last_pointer = Some(pointer.position);
-            if matches!(
+            let candidate = if matches!(
                 pointer.kind,
                 PointerEventKind::Drag(_) | PointerEventKind::Up(_)
             ) {
                 self.captured_pointer
                     .filter(|node| self.nodes.contains_key(node))
                     .or_else(|| self.hit_test(hit_map, pointer.position))
-                    .or(Some(root))
             } else {
-                self.hit_test(hit_map, pointer.position).or(Some(root))
-            }
+                self.hit_test(hit_map, pointer.position)
+            };
+            self.pointer_target(candidate).or(Some(root))
         } else if matches!(
             event,
             UiEvent::Key(_) | UiEvent::Text(_) | UiEvent::Paste(_)
         ) {
-            self.focused().or(Some(root))
+            self.focused().or(self.active_focus_scope()).or(Some(root))
         } else {
             Some(root)
         };
@@ -428,19 +465,7 @@ impl UiTree {
         }
 
         if let Some(pointer) = event.pointer() {
-            let next = self.hit_test(hit_map, pointer.position);
-            let previous = self.hovered;
-            if previous != next {
-                self.hovered = next;
-                if let Some(previous) = previous {
-                    let transition = self.invoke_target(previous, &UiEvent::PointerLeft, &elements);
-                    self.merge_transition(&mut state, transition);
-                }
-                if let Some(next) = next {
-                    let transition = self.invoke_target(next, &UiEvent::PointerEntered, &elements);
-                    self.merge_transition(&mut state, transition);
-                }
-            }
+            self.update_hover(pointer.position, hit_map, &elements, &mut state);
         }
 
         Ok(DispatchOutcome::from_state(target, state))
@@ -486,9 +511,10 @@ impl UiTree {
             }
         }
 
-        let next = self
-            .last_pointer
-            .and_then(|position| self.hit_test(hit_map, position));
+        let next = self.pointer_target(
+            self.last_pointer
+                .and_then(|position| self.hit_test(hit_map, position)),
+        );
         let previous = self.hovered;
         if previous == next {
             return Ok(DispatchOutcome::from_state(next, state));
@@ -518,6 +544,7 @@ impl UiTree {
         let focus_change = self.focus.sync(&self.nodes, self.root, self.viewport);
         self.record_focus_change(focus_change);
         self.repair_removed_interaction();
+        self.repair_pointer_modality();
         report.invalidation = self.pending;
         self.renderer_state = None;
         self.bump_revision();
@@ -551,6 +578,7 @@ impl UiTree {
             viewport: self.viewport,
             focus: self.focus.clone(),
             captured_pointer: self.captured_pointer,
+            suppressed_pointer_buttons: self.suppressed_pointer_buttons,
             hovered: self.hovered,
             last_pointer: self.last_pointer,
             pending_focus_change: self.pending_focus_change,
@@ -610,6 +638,8 @@ impl UiTree {
         self.record_focus_change(focus_change);
         let focus_change = self.focus.repair(&self.nodes, self.root, self.viewport);
         self.record_focus_change(focus_change);
+        self.repair_removed_interaction();
+        self.repair_pointer_modality();
         let by_retained = mapping
             .iter()
             .map(|(_, retained, element)| (*retained, *element))
@@ -683,6 +713,7 @@ impl UiTree {
                 if retained.interactive != element.is_interactive()
                     || retained.focusable != element.is_focusable()
                     || retained.focus_scope != element.is_focus_scope()
+                    || retained.pointer_modal != element.is_pointer_modal()
                     || retained.focus_order != element.explicit_focus_order()
                     || retained.cursor_intent != element.fixed_cursor_intent()
                     || retained.cursor_fingerprint != element.cursor_fingerprint()
@@ -707,6 +738,7 @@ impl UiTree {
                 retained.interactive = element.is_interactive();
                 retained.focusable = element.is_focusable();
                 retained.focus_scope = element.is_focus_scope();
+                retained.pointer_modal = element.is_pointer_modal();
                 retained.focus_order = element.explicit_focus_order();
                 retained.cursor_intent = element.fixed_cursor_intent();
                 retained.cursor_fingerprint = element.cursor_fingerprint();
@@ -778,6 +810,7 @@ impl UiTree {
                 interactive: element.is_interactive(),
                 focusable: element.is_focusable(),
                 focus_scope: element.is_focus_scope(),
+                pointer_modal: element.is_pointer_modal(),
                 focus_order: element.explicit_focus_order(),
                 cursor_intent: element.fixed_cursor_intent(),
                 cursor_fingerprint: element.cursor_fingerprint(),
@@ -800,6 +833,7 @@ impl UiTree {
         self.pending.request(Invalidation::Recompose);
         if self.captured_pointer == Some(node) {
             self.captured_pointer = None;
+            self.suppressed_pointer_buttons |= ALL_POINTER_BUTTONS;
         }
         if self.hovered == Some(node) {
             self.hovered = None;
@@ -970,6 +1004,7 @@ impl UiTree {
             .is_some_and(|node| !self.nodes.contains_key(&node))
         {
             self.captured_pointer = None;
+            self.suppressed_pointer_buttons |= ALL_POINTER_BUTTONS;
         }
         if self
             .hovered
@@ -977,6 +1012,97 @@ impl UiTree {
         {
             self.hovered = None;
         }
+    }
+
+    fn repair_pointer_modality(&mut self) {
+        let Some(scope) = self.active_pointer_modal() else {
+            return;
+        };
+        if self
+            .captured_pointer
+            .is_some_and(|node| !self.is_descendant_of(node, scope))
+        {
+            self.captured_pointer = None;
+            self.suppressed_pointer_buttons |= ALL_POINTER_BUTTONS;
+        }
+    }
+
+    fn update_hover<Message>(
+        &mut self,
+        position: Point,
+        hit_map: &HitMap,
+        elements: &HashMap<NodeId, &Element<'_, Message>>,
+        state: &mut DispatchState<Message>,
+    ) {
+        let next = self.pointer_target(self.hit_test(hit_map, position));
+        let previous = self.hovered;
+        if previous == next {
+            return;
+        }
+        self.hovered = next;
+        if let Some(previous) = previous {
+            let transition = self.invoke_target(previous, &UiEvent::PointerLeft, elements);
+            self.merge_transition(state, transition);
+        }
+        if let Some(next) = next {
+            let transition = self.invoke_target(next, &UiEvent::PointerEntered, elements);
+            self.merge_transition(state, transition);
+        }
+    }
+
+    fn pointer_target(&self, candidate: Option<NodeId>) -> Option<NodeId> {
+        let Some(scope) = self.active_pointer_modal() else {
+            return candidate;
+        };
+        candidate
+            .filter(|node| self.is_descendant_of(*node, scope))
+            .or(Some(scope))
+    }
+
+    fn active_pointer_modal(&self) -> Option<NodeId> {
+        let root = self.root?;
+        let mut order = 0_usize;
+        let mut active = None;
+        self.visit_pointer_modals(root, 0, &mut order, &mut active);
+        active.map(|(_, _, node)| node)
+    }
+
+    fn visit_pointer_modals(
+        &self,
+        node: NodeId,
+        depth: usize,
+        order: &mut usize,
+        active: &mut Option<(usize, usize, NodeId)>,
+    ) {
+        let Some(retained) = self.nodes.get(&node) else {
+            return;
+        };
+        let node_order = *order;
+        *order = (*order).saturating_add(1);
+        if retained.pointer_modal
+            && is_effectively_visible(&self.nodes, node, self.viewport)
+            && active
+                .as_ref()
+                .is_none_or(|(active_depth, active_order, _)| {
+                    (depth, node_order) > (*active_depth, *active_order)
+                })
+        {
+            *active = Some((depth, node_order, node));
+        }
+        for child in &retained.children {
+            self.visit_pointer_modals(*child, depth.saturating_add(1), order, active);
+        }
+    }
+
+    fn is_descendant_of(&self, node: NodeId, ancestor: NodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(candidate) = current {
+            if candidate == ancestor {
+                return true;
+            }
+            current = self.nodes.get(&candidate).and_then(|node| node.parent);
+        }
+        false
     }
 
     fn record_focus_change(&mut self, change: FocusChange) {
@@ -1693,6 +1819,165 @@ mod tests {
 
         prepare_and_commit(&mut tree, &base, Size::new(8, 1), &mut renderer)?;
         assert_eq!(tree.focused(), base_focus);
+        Ok(())
+    }
+
+    #[test]
+    fn opening_pointer_modal_releases_pointer_capture_from_lower_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let captured = Element::<()>::text("base")
+            .key(1_u64)
+            .layout(LayoutStyle::new().size(Dimension::cells(4), Dimension::cells(1)))
+            .on_event(EventPhase::Target, |event, context| {
+                if matches!(
+                    event,
+                    UiEvent::Pointer(PointerEvent {
+                        kind: PointerEventKind::Down(_),
+                        ..
+                    })
+                ) {
+                    context.capture_pointer();
+                }
+            });
+        let base = Element::container([captured]);
+        let mut tree = UiTree::new();
+        let mut renderer = Renderer::new(Size::new(8, 1), WidthPolicy::Unicode);
+        prepare_and_commit(&mut tree, &base, Size::new(8, 1), &mut renderer)?;
+        let _ = tree.dispatch(
+            &base,
+            &UiEvent::Pointer(PointerEvent {
+                kind: PointerEventKind::Down(crate::PointerButton::Primary),
+                position: Point::ORIGIN,
+                modifiers: crate::KeyModifiers::NONE,
+            }),
+            &renderer,
+        )?;
+        assert!(tree.captured_pointer().is_some());
+
+        let overlay = Element::container([
+            Element::<()>::text("base")
+                .key(1_u64)
+                .layout(LayoutStyle::new().size(Dimension::cells(4), Dimension::cells(1)))
+                .interactive(true),
+            Element::container([Element::text("dialog").focusable(true)])
+                .key(2_u64)
+                .focus_scope(true)
+                .pointer_modal(true),
+        ]);
+        prepare_and_commit(&mut tree, &overlay, Size::new(8, 1), &mut renderer)?;
+
+        assert_eq!(tree.captured_pointer(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn removing_captured_target_suppresses_the_rest_of_its_pointer_sequence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let background = || {
+            Element::text("background")
+                .key("background")
+                .layout(LayoutStyle::new().size(Dimension::cells(10), Dimension::cells(1)))
+                .on_event(EventPhase::Target, |event, context| match event {
+                    UiEvent::PointerEntered => context.emit("background-enter"),
+                    UiEvent::Pointer(PointerEvent {
+                        kind: PointerEventKind::Up(_),
+                        ..
+                    }) => context.emit("background-up"),
+                    _ => {}
+                })
+        };
+        let close = Element::text("close")
+            .layout(LayoutStyle::new().size(Dimension::cells(5), Dimension::cells(1)))
+            .on_event(EventPhase::Target, |event, context| {
+                if matches!(
+                    event,
+                    UiEvent::Pointer(PointerEvent {
+                        kind: PointerEventKind::Down(_),
+                        ..
+                    })
+                ) {
+                    context.capture_pointer();
+                    context.emit("close");
+                }
+            });
+        let modal = Element::container([close])
+            .key("modal")
+            .layout(
+                LayoutStyle::new()
+                    .size(Dimension::cells(10), Dimension::cells(1))
+                    .position(arborui_layout::Position::Absolute),
+            )
+            .pointer_modal(true)
+            .interactive(true);
+        let with_modal = Element::container([background(), modal]);
+        let mut tree = UiTree::new();
+        let mut renderer = Renderer::new(Size::new(10, 1), WidthPolicy::Unicode);
+        prepare_and_commit(&mut tree, &with_modal, Size::new(10, 1), &mut renderer)?;
+
+        let down = tree.dispatch(
+            &with_modal,
+            &UiEvent::Pointer(PointerEvent {
+                kind: PointerEventKind::Down(crate::PointerButton::Primary),
+                position: Point::ORIGIN,
+                modifiers: crate::KeyModifiers::NONE,
+            }),
+            &renderer,
+        )?;
+        assert_eq!(down.messages, ["close"]);
+        assert!(tree.captured_pointer().is_some());
+
+        let without_modal = Element::container([background()]);
+        prepare_and_commit(&mut tree, &without_modal, Size::new(10, 1), &mut renderer)?;
+        let root = tree.root().expect("root exists");
+        let background_node = tree.node(root).expect("root exists").children()[0];
+        let drag = tree.dispatch(
+            &without_modal,
+            &UiEvent::Pointer(PointerEvent {
+                kind: PointerEventKind::Drag(crate::PointerButton::Primary),
+                position: Point::ORIGIN,
+                modifiers: crate::KeyModifiers::NONE,
+            }),
+            &renderer,
+        )?;
+        assert_eq!(drag.messages, ["background-enter"]);
+        assert!(drag.handled);
+        assert_eq!(drag.target, None);
+        assert_eq!(tree.hovered(), Some(background_node));
+
+        let secondary_down = tree.dispatch(
+            &without_modal,
+            &UiEvent::Pointer(PointerEvent {
+                kind: PointerEventKind::Down(crate::PointerButton::Secondary),
+                position: Point::ORIGIN,
+                modifiers: crate::KeyModifiers::NONE,
+            }),
+            &renderer,
+        )?;
+        assert!(secondary_down.messages.is_empty());
+
+        let primary_up = tree.dispatch(
+            &without_modal,
+            &UiEvent::Pointer(PointerEvent {
+                kind: PointerEventKind::Up(crate::PointerButton::Primary),
+                position: Point::ORIGIN,
+                modifiers: crate::KeyModifiers::NONE,
+            }),
+            &renderer,
+        )?;
+        assert!(primary_up.messages.is_empty());
+        assert!(primary_up.handled);
+        assert_eq!(primary_up.target, None);
+
+        let secondary_up = tree.dispatch(
+            &without_modal,
+            &UiEvent::Pointer(PointerEvent {
+                kind: PointerEventKind::Up(crate::PointerButton::Secondary),
+                position: Point::ORIGIN,
+                modifiers: crate::KeyModifiers::NONE,
+            }),
+            &renderer,
+        )?;
+        assert_eq!(secondary_up.messages, ["background-up"]);
         Ok(())
     }
 

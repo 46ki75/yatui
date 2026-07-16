@@ -5,8 +5,8 @@ use std::time::Duration;
 use arborui::{CursorShape, CursorVisibility, Modifier, Point, TextBuffer};
 use arborui_example_focus_queue::{FocusQueue, Message};
 use arborui_test::{
-    Key, KeyCode, KeyModifiers, MouseEvent, MouseEventKind, Size, TestApp, TestCellContent,
-    TestFrame,
+    Key, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind, Size, TestApp,
+    TestCellContent, TestFrame,
 };
 
 fn focused_label(frame: &TestFrame) -> String {
@@ -38,6 +38,12 @@ fn representative_frames_match_snapshots() {
     task.key(KeyCode::Enter);
     assert_eq!(task.application().task_completed(0), Some(true));
     insta::assert_snapshot!("focus_queue_task_completed", task.frame());
+
+    task.key(KeyCode::Tab);
+    task.key(KeyCode::Enter);
+    assert_eq!(task.application().editing_task_id(), Some(1));
+    assert_eq!(task.focused_key(), Some(Key::from("edit-title")));
+    insta::assert_snapshot!("focus_queue_edit_dialog", task.frame());
 
     let mut scrolled = TestApp::new(FocusQueue::default(), Size::new(60, 16));
     for index in 1..=8 {
@@ -117,10 +123,87 @@ fn tasks_are_added_and_completed_through_widgets() {
     assert!(app.frame().characters().contains("0 open / 1 complete"));
 
     app.key(KeyCode::Tab);
+    assert_eq!(app.focused_key(), Some(Key::from("task-1-edit")));
+    app.key(KeyCode::Tab);
     assert_eq!(app.focused_key(), Some(Key::from("task-1-delete")));
     app.key(KeyCode::Enter);
     assert_eq!(app.application().task_count(), 0);
     assert!(app.frame().characters().contains("No tasks yet"));
+}
+
+#[test]
+fn edit_dialog_traps_focus_cancels_and_restores_the_origin() {
+    let mut app = TestApp::new(FocusQueue::default(), Size::new(72, 18));
+    app.paste("Original task");
+    app.key(KeyCode::Enter);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Tab);
+    assert_eq!(app.focused_key(), Some(Key::from("task-1-edit")));
+
+    app.key(KeyCode::Enter);
+    assert_eq!(app.application().editing_task_id(), Some(1));
+    assert_eq!(app.focused_key(), Some(Key::from("edit-title")));
+
+    app.key(KeyCode::Tab);
+    assert_eq!(app.focused_key(), Some(Key::from("edit-completed")));
+    app.key(KeyCode::Tab);
+    assert_eq!(app.focused_key(), Some(Key::from("edit-save")));
+    app.key(KeyCode::Tab);
+    assert_eq!(app.focused_key(), Some(Key::from("edit-cancel")));
+    app.key(KeyCode::Tab);
+    assert_eq!(app.focused_key(), Some(Key::from("edit-title")));
+    app.key_with(KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
+    assert_eq!(app.focused_key(), Some(Key::from("edit-cancel")));
+
+    app.key(KeyCode::Escape);
+    assert_eq!(app.application().editing_task_id(), None);
+    assert_eq!(app.application().task_title(0), Some("Original task"));
+    assert_eq!(app.focused_key(), Some(Key::from("task-1-edit")));
+}
+
+#[test]
+fn edit_dialog_saves_unicode_and_checkbox_state() {
+    let mut app = TestApp::new(FocusQueue::default(), Size::new(72, 18));
+    app.paste("Original task");
+    app.key(KeyCode::Enter);
+    app.send(Message::OpenEdit(1));
+
+    app.key_with(
+        KeyCode::Character('a'),
+        KeyModifiers::CONTROL,
+        KeyEventKind::Press,
+    );
+    app.paste("a👩‍💻界");
+    app.key(KeyCode::Home);
+    app.key(KeyCode::Right);
+    app.key(KeyCode::Delete);
+    assert_eq!(app.application().edit_title(), Some("a界"));
+
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Enter);
+    assert_eq!(app.application().edit_completed(), Some(true));
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Enter);
+
+    assert_eq!(app.application().editing_task_id(), None);
+    assert_eq!(app.application().task_title(0), Some("a界"));
+    assert_eq!(app.application().task_completed(0), Some(true));
+    insta::assert_snapshot!("focus_queue_unicode_saved", app.frame());
+}
+
+#[test]
+fn edit_dialog_scrim_blocks_the_background() {
+    let mut app = TestApp::new(FocusQueue::default(), Size::new(72, 18));
+    app.paste("Keep this task");
+    app.key(KeyCode::Enter);
+    app.send(Message::OpenEdit(1));
+
+    app.click(Point::new(70, 6));
+
+    assert_eq!(app.application().editing_task_id(), Some(1));
+    assert_eq!(app.application().task_count(), 1);
+    assert_eq!(app.application().task_title(0), Some("Keep this task"));
 }
 
 #[test]

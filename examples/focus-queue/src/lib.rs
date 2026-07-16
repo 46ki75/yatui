@@ -17,6 +17,16 @@ pub enum Message {
     ToggleTask(u64),
     /// Delete a task from the queue.
     DeleteTask(u64),
+    /// Open the controlled edit dialog for one task.
+    OpenEdit(u64),
+    /// Replace the controlled edit title.
+    EditTitleChanged(TextBuffer),
+    /// Replace the controlled edit completion state.
+    EditCompletedChanged(bool),
+    /// Save the non-empty edit draft to its task.
+    SaveEdit,
+    /// Discard the edit draft and close the dialog.
+    CancelEdit,
     /// Move the controlled queue viewport.
     Scrolled(Point),
     /// Start or resume the focus timer.
@@ -37,10 +47,17 @@ struct Task {
     completed: bool,
 }
 
+struct EditDraft {
+    task_id: u64,
+    title: TextBuffer,
+    completed: bool,
+}
+
 /// A small task queue paired with a deterministic focus timer.
 pub struct FocusQueue {
     draft: TextBuffer,
     tasks: Vec<Task>,
+    edit: Option<EditDraft>,
     next_task_id: u64,
     scroll_y: i32,
     focus_seconds: u32,
@@ -65,6 +82,7 @@ impl FocusQueue {
         let mut queue = Self {
             draft: TextBuffer::default(),
             tasks: Vec::new(),
+            edit: None,
             next_task_id: 1,
             scroll_y: 0,
             focus_seconds,
@@ -100,6 +118,24 @@ impl FocusQueue {
     #[must_use]
     pub fn task_completed(&self, index: usize) -> Option<bool> {
         self.tasks.get(index).map(|task| task.completed)
+    }
+
+    /// Returns the task currently open in the edit dialog.
+    #[must_use]
+    pub fn editing_task_id(&self) -> Option<u64> {
+        self.edit.as_ref().map(|edit| edit.task_id)
+    }
+
+    /// Returns the controlled edit title while the dialog is open.
+    #[must_use]
+    pub fn edit_title(&self) -> Option<&str> {
+        self.edit.as_ref().map(|edit| edit.title.text())
+    }
+
+    /// Returns the controlled edit completion state while the dialog is open.
+    #[must_use]
+    pub fn edit_completed(&self) -> Option<bool> {
+        self.edit.as_ref().map(|edit| edit.completed)
     }
 
     /// Returns the timer's remaining whole seconds.
@@ -207,6 +243,62 @@ impl Application for FocusQueue {
             }
             Message::DeleteTask(id) => {
                 if self.remove_task(id) {
+                    context.invalidate(Invalidation::Recompose);
+                }
+                Command::none()
+            }
+            Message::OpenEdit(id) => {
+                let Some(task) = self.tasks.iter().find(|task| task.id == id) else {
+                    return Command::none();
+                };
+                self.edit = Some(EditDraft {
+                    task_id: task.id,
+                    title: TextBuffer::new(task.title.clone()),
+                    completed: task.completed,
+                });
+                context.invalidate(Invalidation::Recompose);
+                Command::none()
+            }
+            Message::EditTitleChanged(title) => {
+                let Some(edit) = self.edit.as_mut() else {
+                    return Command::none();
+                };
+                edit.title = title;
+                context.invalidate(Invalidation::Layout);
+                Command::none()
+            }
+            Message::EditCompletedChanged(completed) => {
+                let Some(edit) = self.edit.as_mut() else {
+                    return Command::none();
+                };
+                edit.completed = completed;
+                context.invalidate(Invalidation::Paint);
+                Command::none()
+            }
+            Message::SaveEdit => {
+                let Some(edit) = self.edit.as_ref() else {
+                    return Command::none();
+                };
+                let title = edit.title.text().trim().to_owned();
+                if title.is_empty() {
+                    return Command::none();
+                }
+                let task_id = edit.task_id;
+                let completed = edit.completed;
+                let Some(task) = self.tasks.iter_mut().find(|task| task.id == task_id) else {
+                    self.edit = None;
+                    context.invalidate(Invalidation::Recompose);
+                    return Command::none();
+                };
+                task.title = title;
+                task.completed = completed;
+                self.edit = None;
+                self.refresh_labels();
+                context.invalidate(Invalidation::Recompose);
+                Command::none()
+            }
+            Message::CancelEdit => {
+                if self.edit.take().is_some() {
                     context.invalidate(Invalidation::Recompose);
                 }
                 Command::none()
@@ -326,6 +418,10 @@ impl Application for FocusQueue {
                     text(&task.title)
                         .style(title_style)
                         .layout(LayoutStyle::new().flex(1, 1)),
+                    button("Edit", move || Message::OpenEdit(id))
+                        .label_style(button_style)
+                        .build()
+                        .key(format!("task-{id}-edit")),
                     button("Delete", move || Message::DeleteTask(id))
                         .label_style(Style::new().foreground(Color::BrightRed))
                         .build()
@@ -412,12 +508,87 @@ impl Application for FocusQueue {
         )
         .layout(LayoutStyle::new().size(full_width, Dimension::cells(1)));
 
-        column_with_gap([input_panel, queue_panel, timer_panel, footer], 1).layout(LayoutStyle {
+        let application = column_with_gap([input_panel, queue_panel, timer_panel, footer], 1)
+            .layout(LayoutStyle {
+                width: full_width,
+                height: Dimension::percent(100),
+                direction: FlexDirection::Column,
+                gap: 1,
+                ..LayoutStyle::default()
+            });
+
+        let overlay_layout =
+            LayoutStyle::new().size(Dimension::percent(100), Dimension::percent(100));
+        let Some(edit) = self.edit.as_ref() else {
+            return stack([application]).layout(overlay_layout);
+        };
+        let edit_title = text_input(&edit.title, Message::EditTitleChanged)
+            .on_submit(|| Message::SaveEdit)
+            .style(Style::new().foreground(Color::BrightWhite))
+            .layout(LayoutStyle::new().size(full_width, Dimension::cells(1)))
+            .focus_order(0)
+            .build()
+            .key("edit-title");
+        let completed = checkbox("Completed", edit.completed, Message::EditCompletedChanged)
+            .label_style(Style::new().foreground(Color::BrightYellow))
+            .focus_order(1)
+            .build()
+            .key("edit-completed");
+        let actions = row_with_gap(
+            [
+                flexible_spacer(),
+                button("Save", || Message::SaveEdit)
+                    .label_style(Style::new().foreground(Color::BrightGreen))
+                    .focus_order(2)
+                    .build()
+                    .key("edit-save"),
+                button("Cancel", || Message::CancelEdit)
+                    .label_style(Style::new().foreground(Color::BrightRed))
+                    .focus_order(3)
+                    .build()
+                    .key("edit-cancel"),
+            ],
+            2,
+        )
+        .layout(LayoutStyle {
             width: full_width,
-            height: Dimension::percent(100),
-            direction: FlexDirection::Column,
-            gap: 1,
+            height: Dimension::cells(1),
+            direction: FlexDirection::Row,
+            gap: 2,
             ..LayoutStyle::default()
-        })
+        });
+        let edit_form = column_with_gap([text("Title"), edit_title, completed, actions], 1).layout(
+            LayoutStyle {
+                width: full_width,
+                height: Dimension::percent(100),
+                direction: FlexDirection::Column,
+                gap: 1,
+                ..LayoutStyle::default()
+            },
+        );
+        let edit_panel = Block::new(edit_form)
+            .title("Edit task")
+            .padding(Insets::all(1))
+            .style(
+                Style::new()
+                    .foreground(Color::BrightWhite)
+                    .background(Color::Black),
+            )
+            .border_style(Style::new().foreground(Color::BrightCyan))
+            .layout(LayoutStyle {
+                width: Dimension::percent(80),
+                height: Dimension::cells(11),
+                min_width: Dimension::cells(30),
+                max_width: Dimension::cells(52),
+                flex_shrink: 1,
+                ..LayoutStyle::default()
+            })
+            .build();
+        let edit_dialog = dialog(edit_panel, || Message::CancelEdit)
+            .scrim_style(Style::new().background(Color::Black))
+            .build()
+            .key("edit-dialog");
+
+        stack([application, edit_dialog]).layout(overlay_layout)
     }
 }

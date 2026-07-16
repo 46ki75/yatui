@@ -53,9 +53,9 @@ pub use arborui_ui::{
     PreparedUiFrame, UiCommitError, UiEvent, UiKey, UiKeyEvent, UiTree, WidgetKind,
 };
 pub use arborui_widgets::{
-    Block, BorderSet, Button, ScrollView, TextInput, button, column, column_with_gap,
-    flexible_spacer, list, list_with_gap, row, row_with_gap, scroll_view, spacer,
-    spacer_with_dimensions, stack, text_input,
+    Block, BorderSet, Button, Checkbox, Dialog, ScrollView, TextInput, button, checkbox, column,
+    column_with_gap, dialog, flexible_spacer, list, list_with_gap, row, row_with_gap, scroll_view,
+    spacer, spacer_with_dimensions, stack, text_input,
 };
 
 /// Common application, layout, and widget APIs.
@@ -63,9 +63,10 @@ pub mod prelude {
     pub use crate::layout::{Align, FlexDirection, Justify, Position};
     pub use crate::widgets::text;
     pub use crate::{
-        Application, Block, Button, Color, Command, Dimension, Element, Insets, Invalidation, Key,
-        LayoutStyle, Point, ScrollView, Size, Style, TextBuffer, TextInput, UpdateContext, button,
-        column, column_with_gap, flexible_spacer, list, list_with_gap, row, row_with_gap,
-        scroll_view, spacer, spacer_with_dimensions, stack, text_input,
+        Application, Block, Button, Checkbox, Color, Command, Dialog, Dimension, Element, Insets,
+        Invalidation, Key, LayoutStyle, Point, ScrollView, Size, Style, TextBuffer, TextInput,
+        UpdateContext, button, checkbox, column, column_with_gap, dialog, flexible_spacer, list,
+        list_with_gap, row, row_with_gap, scroll_view, spacer, spacer_with_dimensions, stack,
+        text_input,
     };
 }

@@ -1,15 +1,15 @@
 use std::error::Error;
 
-use arborui_core::{CursorVisibility, Modifier, Point, Size};
+use arborui_core::{Color, CursorVisibility, Modifier, Point, Size, Style};
 use arborui_layout::{Dimension, LayoutStyle};
 use arborui_render::{FramePatch, PatchCellContent, Renderer};
 use arborui_text::{TextBuffer, TextEdit, TextMovement, WidthPolicy};
 use arborui_ui::{
-    Element, KeyAction, KeyModifiers, PointerButton, PointerEvent, PointerEventKind, UiEvent,
+    Element, Key, KeyAction, KeyModifiers, PointerButton, PointerEvent, PointerEventKind, UiEvent,
     UiKey, UiKeyEvent, UiTree,
 };
 
-use crate::{Block, Button, ScrollView, TextInput, stack};
+use crate::{Block, Button, Checkbox, Dialog, ScrollView, TextInput, stack};
 
 fn prepare_and_commit<Message>(
     tree: &mut UiTree,
@@ -152,6 +152,96 @@ fn button_activates_on_pointer_press_and_keys() -> Result<(), Box<dyn Error>> {
     )?;
     assert_eq!(enter.messages, ["pressed"]);
     assert_eq!(space.messages, ["pressed"]);
+    Ok(())
+}
+
+#[test]
+fn checkbox_renders_and_emits_the_next_controlled_state() -> Result<(), Box<dyn Error>> {
+    let view = Checkbox::new("ready", false, |checked| checked)
+        .layout(LayoutStyle::new().size(Dimension::cells(9), Dimension::cells(1)))
+        .build();
+    let mut tree = UiTree::new();
+    let mut renderer = Renderer::new(Size::new(9, 1), WidthPolicy::Unicode);
+    let prepared = tree.prepare(&view, Size::new(9, 1), &mut renderer)?;
+
+    assert_eq!(patch_grapheme(prepared.patch(), Point::ORIGIN), Some("["));
+    tree.commit(prepared, &mut renderer)?;
+    let outcome = tree.dispatch(
+        &view,
+        &key(UiKey::Character(' '), KeyModifiers::NONE),
+        &renderer,
+    )?;
+    assert_eq!(outcome.messages, [true]);
+    assert!(outcome.handled);
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DialogMessage {
+    Background,
+    Confirm,
+    Dismiss,
+}
+
+#[test]
+fn dialog_owns_focus_and_blocks_lower_pointer_targets() -> Result<(), Box<dyn Error>> {
+    let background = Button::new("background", || DialogMessage::Background)
+        .layout(LayoutStyle::new().size(Dimension::percent(100), Dimension::percent(100)))
+        .build();
+    let panel = Block::new(
+        Button::new("confirm", || DialogMessage::Confirm)
+            .layout(LayoutStyle::new().size(Dimension::cells(7), Dimension::cells(1)))
+            .build()
+            .key("confirm"),
+    )
+    .layout(LayoutStyle::new().size(Dimension::cells(11), Dimension::cells(3)))
+    .build();
+    let modal = Dialog::new(panel, || DialogMessage::Dismiss)
+        .scrim_style(Style::new().background(Color::Black))
+        .build();
+    let view = stack([background, modal])
+        .layout(LayoutStyle::new().size(Dimension::percent(100), Dimension::percent(100)));
+    let mut tree = UiTree::new();
+    let mut renderer = Renderer::new(Size::new(21, 7), WidthPolicy::Unicode);
+    prepare_and_commit(&mut tree, &view, Size::new(21, 7), &mut renderer)?;
+
+    assert_ne!(tree.active_focus_scope(), tree.root());
+    let focused = tree.focused().ok_or("dialog did not claim focus")?;
+    assert_eq!(
+        tree.node(focused).and_then(|node| node.key()).cloned(),
+        Some(Key::from("confirm"))
+    );
+
+    let outside = tree.dispatch(
+        &view,
+        &pointer(PointerEventKind::Down(PointerButton::Primary), 0, 0),
+        &renderer,
+    )?;
+    assert!(outside.messages.is_empty());
+    assert!(outside.default_prevented);
+    assert!(tree.captured_pointer().is_some());
+
+    let escape = tree.dispatch(&view, &key(UiKey::Escape, KeyModifiers::NONE), &renderer)?;
+    assert_eq!(escape.messages, [DialogMessage::Dismiss]);
+    assert!(escape.propagation_stopped);
+    Ok(())
+}
+
+#[test]
+fn dialog_escape_works_without_focusable_content() -> Result<(), Box<dyn Error>> {
+    let panel = Block::new(Element::text("notice"))
+        .layout(LayoutStyle::new().size(Dimension::cells(10), Dimension::cells(3)))
+        .build();
+    let modal = Dialog::new(panel, || DialogMessage::Dismiss).build();
+    let view = stack([Element::text("background"), modal])
+        .layout(LayoutStyle::new().size(Dimension::percent(100), Dimension::percent(100)));
+    let mut tree = UiTree::new();
+    let mut renderer = Renderer::new(Size::new(20, 7), WidthPolicy::Unicode);
+    prepare_and_commit(&mut tree, &view, Size::new(20, 7), &mut renderer)?;
+
+    assert_eq!(tree.focused(), None);
+    let escape = tree.dispatch(&view, &key(UiKey::Escape, KeyModifiers::NONE), &renderer)?;
+    assert_eq!(escape.messages, [DialogMessage::Dismiss]);
     Ok(())
 }
 

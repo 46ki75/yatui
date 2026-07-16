@@ -448,7 +448,11 @@ capability transitions cannot leave terminal and backend state in disagreement.
 
 ### Milestone 11: Production-Scale Application Proof
 
-Status: planned.
+Status: planned. Focus Queue now contains the first application-driven slice: a
+controlled checkbox and modal edit form with Unicode input, focus trapping and
+restoration, pointer isolation, and deterministic facade-only tests. Multiple
+screens, external streaming work, bounded ingress, virtualization, table/select
+controls, and the complete production-scale proof remain planned.
 
 Deliver:
 

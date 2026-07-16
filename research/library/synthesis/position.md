@@ -141,6 +141,10 @@ The shortest path from research to a defensible product position is:
 6. Review the results as architecture decisions, including negative findings and
    scope reductions.
 
+The first bounded application slice is recorded in the
+[`Facade-Only Application Proof`](../experiments/application-proof.md). It
+establishes the modal form and public test path but does not complete item 1.
+
 ## Synthesis Index
 
 - [`lesson-ledger.yaml`](lesson-ledger.yaml): atomic project observations and

@@ -38,6 +38,7 @@ pub struct Element<'a, Message> {
     interactive: bool,
     focusable: bool,
     focus_scope: bool,
+    pointer_modal: bool,
     focus_order: Option<i32>,
     cursor: Option<CursorState>,
     dynamic_cursor: Option<Box<CursorCallback<'a>>>,
@@ -76,6 +77,7 @@ impl<'a, Message> Element<'a, Message> {
             interactive: false,
             focusable: false,
             focus_scope: false,
+            pointer_modal: false,
             focus_order: None,
             cursor: None,
             dynamic_cursor: None,
@@ -104,6 +106,7 @@ impl<'a, Message> Element<'a, Message> {
             interactive: false,
             focusable: false,
             focus_scope: false,
+            pointer_modal: false,
             focus_order: None,
             cursor: None,
             dynamic_cursor: None,
@@ -192,6 +195,18 @@ impl<'a, Message> Element<'a, Message> {
     #[must_use]
     pub const fn focus_scope(mut self, focus_scope: bool) -> Self {
         self.focus_scope = focus_scope;
+        self
+    }
+
+    /// Marks this element as a modal pointer-routing boundary.
+    ///
+    /// The deepest visible pointer-modal element receives pointer events that
+    /// would otherwise target outside its subtree. Existing capture outside the
+    /// boundary is cancelled without exposing remaining in-flight pointer
+    /// sequences.
+    #[must_use]
+    pub const fn pointer_modal(mut self, pointer_modal: bool) -> Self {
+        self.pointer_modal = pointer_modal;
         self
     }
 
@@ -323,6 +338,10 @@ impl<'a, Message> Element<'a, Message> {
 
     pub(crate) const fn is_focus_scope(&self) -> bool {
         self.focus_scope
+    }
+
+    pub(crate) const fn is_pointer_modal(&self) -> bool {
+        self.pointer_modal
     }
 
     pub(crate) const fn explicit_focus_order(&self) -> Option<i32> {

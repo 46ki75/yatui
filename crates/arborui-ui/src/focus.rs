@@ -259,7 +259,7 @@ fn scope_for(nodes: &HashMap<NodeId, RetainedNode>, root: NodeId, node: NodeId) 
     None
 }
 
-fn is_effectively_visible(
+pub(crate) fn is_effectively_visible(
     nodes: &HashMap<NodeId, RetainedNode>,
     node: NodeId,
     viewport: Option<Size>,

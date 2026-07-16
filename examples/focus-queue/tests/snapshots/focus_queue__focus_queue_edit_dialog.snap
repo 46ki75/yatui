@@ -1,0 +1,18 @@
+---
+source: examples/focus-queue/tests/focus_queue.rs
+expression: task.frame()
+---
+                                                            
+                                                            
+                                                            
+      ┌ Edit task ───────────────────────────────────┐      
+      │                                              │      
+      │ Title                                        │      
+      │                                              │      
+      │ Write pilot notes                            │      
+      │                                              │      
+      │ [x] Completed                                │      
+      │                                              │      
+      │                                 Save  Cancel │      
+      │                                              │      
+      └──────────────────────────────────────────────┘

@@ -209,6 +209,13 @@ cell identifies the topmost interactive retained node.
 This guarantees that z-order, clipping, overlays, and hit testing agree. Mouse
 capture overrides ordinary hit testing for drag and release events.
 
+Pointer modality is separate from keyboard focus scopes. The deepest visible
+`Element::pointer_modal` boundary receives pointer events targeted outside its
+subtree and cancels lower-scope capture. If a captured node is removed, the
+remaining drag and release events for each in-flight pointer button are consumed
+rather than exposed to newly uncovered controls. Hover state and enter/leave
+transitions still follow the current pointer position.
+
 Hit maps are committed transactionally with rendered frames. UI pointer capture
 is distinct from terminal mouse-reporting mode. Hover enter and leave are
 target-only transitions recalculated from the committed hit map after a frame.
@@ -364,17 +371,23 @@ The first standard widget set is:
 - Stack
 - Spacer
 - Button
+- Checkbox
 - Text input
 - Scroll view
 - List
+- Dialog
 
 Tables, trees, forms, markdown, charts, and editors should begin as separate
 ecosystem crates until their lower-level requirements are understood.
 
 The initial widgets are controlled. `TextInput` borrows an application-owned
-`TextBuffer` and emits an updated owned buffer; `ScrollView` borrows an offset
-and emits signed deltas. Button activation uses a repeatable message factory,
-so application messages do not need to implement `Clone`. Block painting and
+`TextBuffer` and emits an updated owned buffer; `Checkbox` borrows a boolean and
+emits the next value; `ScrollView` borrows an offset and emits signed deltas.
+Button activation uses a repeatable message factory, so application messages do
+not need to implement `Clone`. `Dialog` fills its containing layout region with
+a focus scope and pointer barrier around caller-supplied content while leaving
+open or closed state in the application. A viewport modal therefore uses a
+viewport-sized stack host with the dialog as its final layer. Block painting and
 stack/scroll composition use the backend-neutral `Element` paint and layout
 contracts rather than terminal-backend types.
 

@@ -25,6 +25,7 @@ pub struct RetainedNode {
     pub(crate) interactive: bool,
     pub(crate) focusable: bool,
     pub(crate) focus_scope: bool,
+    pub(crate) pointer_modal: bool,
     pub(crate) focus_order: Option<i32>,
     pub(crate) cursor_intent: Option<arborui_core::CursorState>,
     pub(crate) cursor_fingerprint: u64,
@@ -94,5 +95,11 @@ impl RetainedNode {
     #[must_use]
     pub const fn is_focus_scope(&self) -> bool {
         self.focus_scope
+    }
+
+    /// Returns whether this node establishes a modal pointer boundary.
+    #[must_use]
+    pub const fn is_pointer_modal(&self) -> bool {
+        self.pointer_modal
     }
 }

@@ -7,8 +7,12 @@
 pub mod block;
 /// Focusable push buttons.
 pub mod button;
+/// Controlled boolean checkboxes.
+pub mod checkbox;
 /// Vertical flex composition.
 pub mod column;
+/// Modal focus scopes and pointer barriers.
+pub mod dialog;
 /// Controlled single-line text input.
 pub mod input;
 /// Keyed vertical composition.
@@ -26,7 +30,9 @@ pub mod text;
 
 pub use block::{Block, BorderSet};
 pub use button::{Button, button};
+pub use checkbox::{Checkbox, checkbox};
 pub use column::{column, column_with_gap};
+pub use dialog::{Dialog, dialog};
 pub use input::{TextInput, text_input};
 pub use list::{list, list_with_gap};
 pub use row::{row, row_with_gap};
