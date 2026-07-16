@@ -1,0 +1,20 @@
+---
+source: examples/focus-queue/tests/focus_queue.rs
+expression: app.frame()
+---
+┌ External work ───────────────────────────────────────────┐
+│Status: complete | 32 received  Start                     │
+└──────────────────────────────────────────────────────────┘
+                                                            
+┌ Activity log (newest first) ─────────────────────────────┐
+│Remote update 34                                          │
+│Remote update 33                                          │
+│Remote update 32                                          │
+│Remote update 31                                          │
+│Remote update 30                                          │
+│Remote update 29                                          │
+│Remote update 28                                          │
+│Remote update 27                                          │
+└──────────────────────────────────────────────────────────┘
+                                                            
+Queue [Activity]             Tab focus | Enter activate Quit

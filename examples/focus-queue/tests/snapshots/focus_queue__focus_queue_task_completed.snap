@@ -17,4 +17,4 @@ expression: task.frame()
 │25:00  0 open / 1 complete    Start  Reset                │
 └──────────────────────────────────────────────────────────┘
                                                             
-Tab focus | Enter activate | Wheel scroll               Quit
+[Queue] Activity             Tab focus | Enter activate Quit

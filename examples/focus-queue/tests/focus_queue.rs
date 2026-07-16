@@ -1,9 +1,13 @@
 //! Downstream pilot tests using only the public application and test facades.
 
-use std::time::Duration;
+use std::{
+    sync::{Arc, Barrier, Mutex, MutexGuard},
+    thread,
+    time::Duration,
+};
 
-use arborui::{CursorShape, CursorVisibility, Modifier, Point, TextBuffer};
-use arborui_example_focus_queue::{FocusQueue, Message};
+use arborui::{CursorShape, CursorVisibility, EventProxy, Modifier, Point, TextBuffer};
+use arborui_example_focus_queue::{ActivityCancellation, ActivityStatus, FocusQueue, Message};
 use arborui_test::{
     Key, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind, Size, TestApp,
     TestCellContent, TestFrame,
@@ -19,6 +23,49 @@ fn focused_label(frame: &TestFrame) -> String {
             TestCellContent::Empty | TestCellContent::Continuation { .. } => None,
         })
         .collect()
+}
+
+struct ActivityLaunch {
+    generation: u64,
+    cancellation: ActivityCancellation,
+    proxy: EventProxy<Message>,
+}
+
+#[derive(Clone, Default)]
+struct ControlledActivity {
+    launches: Arc<Mutex<Vec<ActivityLaunch>>>,
+}
+
+impl ControlledActivity {
+    fn queue(&self) -> FocusQueue {
+        let launches = Arc::clone(&self.launches);
+        FocusQueue::with_activity_launcher(60, move |generation, cancellation, proxy| {
+            lock(&launches).push(ActivityLaunch {
+                generation,
+                cancellation,
+                proxy,
+            });
+            Ok(())
+        })
+    }
+
+    fn launch(&self, index: usize) -> (u64, ActivityCancellation, EventProxy<Message>) {
+        let launches = lock(&self.launches);
+        let launch = launches
+            .get(index)
+            .unwrap_or_else(|| panic!("missing controlled activity launch {index}"));
+        (
+            launch.generation,
+            launch.cancellation.clone(),
+            launch.proxy.clone(),
+        )
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]
@@ -61,6 +108,16 @@ fn representative_frames_match_snapshots() {
     scrolled.mouse(scroll_down);
     assert_eq!(scrolled.application().scroll_y(), 2);
     insta::assert_snapshot!("focus_queue_scrolled", scrolled.frame());
+
+    let activity_source = ControlledActivity::default();
+    let mut activity = TestApp::new(activity_source.queue(), Size::new(60, 16));
+    activity.send(Message::ShowActivity);
+    assert_eq!(
+        activity.application().activity_status(),
+        ActivityStatus::Idle
+    );
+    assert!(activity.application().showing_activity());
+    insta::assert_snapshot!("focus_queue_activity_idle", activity.frame());
 }
 
 #[test]
@@ -256,5 +313,251 @@ fn wheel_scrolling_is_controlled_and_clamped_by_the_model() {
         app.frame().characters().contains("Task 8"),
         "{}",
         app.frame().characters()
+    );
+}
+
+#[test]
+fn screen_navigation_preserves_queue_owned_state() {
+    let activity_source = ControlledActivity::default();
+    let mut app = TestApp::new(activity_source.queue(), Size::new(72, 18));
+    app.paste("Keep queue state");
+    app.key(KeyCode::Enter);
+    app.send(Message::StartTimer);
+
+    for _ in 0..8 {
+        app.key(KeyCode::Tab);
+    }
+    assert_eq!(app.focused_key(), Some(Key::from("screen-activity")));
+    app.key(KeyCode::Enter);
+
+    assert!(app.application().showing_activity());
+    assert_eq!(app.focused_key(), Some(Key::from("screen-activity")));
+    assert!(app.frame().characters().contains("External work"));
+
+    app.key_with(KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
+    assert_eq!(app.focused_key(), Some(Key::from("screen-queue")));
+    app.key(KeyCode::Enter);
+
+    assert!(!app.application().showing_activity());
+    assert_eq!(app.application().task_title(0), Some("Keep queue state"));
+    assert!(app.application().timer_running());
+    assert!(app.frame().characters().contains("Keep queue state"));
+}
+
+#[test]
+fn cancellation_signals_the_worker_and_rejects_racing_messages() {
+    let activity_source = ControlledActivity::default();
+    let mut app = TestApp::new(activity_source.queue(), Size::new(72, 18));
+    app.send(Message::ShowActivity);
+    app.send(Message::StartActivity);
+    let (generation, cancellation, proxy) = activity_source.launch(0);
+
+    assert_eq!(app.application().activity_status(), ActivityStatus::Running);
+    assert!(!cancellation.is_cancelled());
+    let item_sent = Arc::new(Barrier::new(2));
+    let cancellation_sent = Arc::new(Barrier::new(2));
+    let worker_item_sent = Arc::clone(&item_sent);
+    let worker_cancellation_sent = Arc::clone(&cancellation_sent);
+    let worker_cancellation = cancellation.clone();
+    let worker = thread::spawn(move || {
+        let first_sent = proxy
+            .send(Message::ActivityItem {
+                generation,
+                text: "accepted before cancellation".to_owned(),
+            })
+            .is_ok();
+        worker_item_sent.wait();
+        worker_cancellation_sent.wait();
+        let observed_cancellation = worker_cancellation.is_cancelled();
+        let raced_item_sent = proxy
+            .send(Message::ActivityItem {
+                generation,
+                text: "raced after cancellation".to_owned(),
+            })
+            .is_ok();
+        let finish_sent = proxy.send(Message::ActivityFinished { generation }).is_ok();
+        (
+            first_sent,
+            observed_cancellation,
+            raced_item_sent,
+            finish_sent,
+        )
+    });
+    item_sent.wait();
+    app.settle();
+    assert_eq!(app.application().activity_item_count(), 1);
+
+    app.send(Message::CancelActivity);
+    assert!(cancellation.is_cancelled());
+    assert_eq!(
+        app.application().activity_status(),
+        ActivityStatus::Cancelled
+    );
+    assert_ne!(app.application().activity_generation(), generation);
+
+    cancellation_sent.wait();
+    assert!(matches!(worker.join(), Ok((true, true, true, true))));
+    app.settle();
+
+    assert_eq!(
+        app.application().activity_status(),
+        ActivityStatus::Cancelled
+    );
+    assert_eq!(app.application().activity_item_count(), 1);
+    assert_eq!(
+        app.application().activity_item(0),
+        Some("accepted before cancellation")
+    );
+}
+
+#[test]
+fn restarting_running_activity_cancels_and_replaces_its_generation() {
+    let activity_source = ControlledActivity::default();
+    let mut app = TestApp::new(activity_source.queue(), Size::new(72, 18));
+    app.send(Message::StartActivity);
+    let (first_generation, first_cancellation, first_proxy) = activity_source.launch(0);
+
+    app.send(Message::StartActivity);
+    let (second_generation, second_cancellation, second_proxy) = activity_source.launch(1);
+    assert!(first_cancellation.is_cancelled());
+    assert!(!second_cancellation.is_cancelled());
+    assert_ne!(first_generation, second_generation);
+
+    assert!(
+        first_proxy
+            .send(Message::ActivityItem {
+                generation: first_generation,
+                text: "stale replacement".to_owned(),
+            })
+            .is_ok()
+    );
+    assert!(
+        second_proxy
+            .send(Message::ActivityItem {
+                generation: second_generation,
+                text: "current replacement".to_owned(),
+            })
+            .is_ok()
+    );
+    app.settle();
+
+    assert_eq!(app.application().activity_item_count(), 1);
+    assert_eq!(
+        app.application().activity_item(0),
+        Some("current replacement")
+    );
+}
+
+#[test]
+fn synchronous_activity_launch_failure_settles_as_recoverable() {
+    let cancellation = Arc::new(Mutex::new(None));
+    let recorded_cancellation = Arc::clone(&cancellation);
+    let queue =
+        FocusQueue::with_activity_launcher(60, move |_generation, launch_cancellation, _proxy| {
+            *lock(&recorded_cancellation) = Some(launch_cancellation);
+            Err("worker capacity exhausted".to_owned())
+        });
+    let mut app = TestApp::new(queue, Size::new(72, 18));
+
+    app.send(Message::ShowActivity);
+    app.send(Message::StartActivity);
+
+    assert_eq!(app.application().activity_status(), ActivityStatus::Failed);
+    assert_eq!(
+        app.application().activity_error(),
+        Some("worker capacity exhausted")
+    );
+    assert!(app.frame().characters().contains("Retry"));
+    assert!(
+        lock(&cancellation)
+            .as_ref()
+            .is_some_and(ActivityCancellation::is_cancelled)
+    );
+}
+
+#[test]
+fn external_activity_settles_and_bounds_retained_history() {
+    let activity_source = ControlledActivity::default();
+    let mut app = TestApp::new(activity_source.queue(), Size::new(60, 16));
+    app.send(Message::ShowActivity);
+    app.send(Message::StartActivity);
+    let (generation, cancellation, proxy) = activity_source.launch(0);
+
+    for index in 0..35 {
+        assert!(
+            proxy
+                .send(Message::ActivityItem {
+                    generation,
+                    text: format!("Remote update {index}"),
+                })
+                .is_ok()
+        );
+    }
+    assert!(proxy.send(Message::ActivityFinished { generation }).is_ok());
+    app.settle();
+
+    assert!(cancellation.is_cancelled());
+    assert_eq!(
+        app.application().activity_status(),
+        ActivityStatus::Completed
+    );
+    assert_eq!(app.application().activity_item_count(), 32);
+    assert_eq!(app.application().activity_item(0), Some("Remote update 3"));
+    assert_eq!(
+        app.application().activity_item(31),
+        Some("Remote update 34")
+    );
+    insta::assert_snapshot!("focus_queue_activity_complete", app.frame());
+}
+
+#[test]
+fn external_activity_failure_is_recoverable_by_a_new_generation() {
+    let activity_source = ControlledActivity::default();
+    let mut app = TestApp::new(activity_source.queue(), Size::new(72, 18));
+    app.send(Message::ShowActivity);
+    app.send(Message::StartActivity);
+    let (failed_generation, failed_cancellation, failed_proxy) = activity_source.launch(0);
+
+    assert!(
+        failed_proxy
+            .send(Message::ActivityFailed {
+                generation: failed_generation,
+                error: "remote service unavailable".to_owned(),
+            })
+            .is_ok()
+    );
+    app.settle();
+    assert!(failed_cancellation.is_cancelled());
+    assert_eq!(app.application().activity_status(), ActivityStatus::Failed);
+    assert_eq!(
+        app.application().activity_error(),
+        Some("remote service unavailable")
+    );
+    assert!(app.frame().characters().contains("Retry"));
+
+    app.send(Message::StartActivity);
+    let (retry_generation, _retry_cancellation, retry_proxy) = activity_source.launch(1);
+    assert_ne!(retry_generation, failed_generation);
+    assert_eq!(app.application().activity_status(), ActivityStatus::Running);
+    assert_eq!(app.application().activity_error(), None);
+
+    assert!(
+        failed_proxy
+            .send(Message::ActivityFinished {
+                generation: failed_generation,
+            })
+            .is_ok()
+    );
+    assert!(
+        retry_proxy
+            .send(Message::ActivityFinished {
+                generation: retry_generation,
+            })
+            .is_ok()
+    );
+    app.settle();
+    assert_eq!(
+        app.application().activity_status(),
+        ActivityStatus::Completed
     );
 }

@@ -1,0 +1,20 @@
+---
+source: examples/focus-queue/tests/focus_queue.rs
+expression: activity.frame()
+---
+┌ External work ───────────────────────────────────────────┐
+│Status: idle  Start                                       │
+└──────────────────────────────────────────────────────────┘
+                                                            
+┌ Activity log (newest first) ─────────────────────────────┐
+│No external activity yet. Start a run to receive updates. │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+                                                            
+Queue [Activity]             Tab focus | Enter activate Quit

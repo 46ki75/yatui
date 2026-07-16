@@ -319,6 +319,13 @@ Future extensions may add scoped task IDs and cancellation. Task ownership must
 be explicit; removing a retained component must not silently leave a task with
 a stale UI handle.
 
+Until scoped cancellation exists, an application integrating a long-running
+producer owns its cancellation signal. Messages from replaceable work should
+carry an application generation or request ID so an item or completion racing
+with cancellation can be rejected during serialized update. `EventProxy` ingress
+is currently unbounded; limiting retained model history after receipt is not
+backpressure and must not be described as such.
+
 ## Scheduler
 
 The scheduler has independent queues for:
