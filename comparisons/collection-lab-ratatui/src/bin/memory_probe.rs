@@ -3,11 +3,11 @@
 use std::{error::Error, hint::black_box};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiTableLab, draw_test_table_terminal,
-    draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiTableLab, draw_test_log_terminal,
+    draw_test_table_terminal, draw_test_terminal,
 };
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
 };
 use arborui_test::{Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
@@ -29,6 +29,7 @@ enum Framework {
 enum Workload {
     Collection(CollectionMode),
     Table,
+    Log,
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +44,9 @@ enum Scenario {
     UnchangedRedraw,
     VisibleUpdate,
     OffscreenUpdate,
+    PageUp,
+    AppendFollowing,
+    AppendPaused,
 }
 
 struct Metrics {
@@ -60,7 +64,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().collect::<Vec<_>>();
     let [_, framework, workload, scenario, item_count] = arguments.as_slice() else {
         return Err(
-            "usage: memory_probe <arborui|ratatui> <fixed|variable|table> <scenario> <items>"
+            "usage: memory_probe <arborui|ratatui> <fixed|variable|table|log> <scenario> <items>"
                 .into(),
         );
     };
@@ -91,6 +95,7 @@ fn measure_arborui(workload: Workload, scenario: Scenario, item_count: usize) ->
     match workload {
         Workload::Collection(mode) => measure_arborui_collection(mode, scenario, item_count),
         Workload::Table => measure_arborui_table(scenario, item_count),
+        Workload::Log => measure_arborui_log(scenario, item_count),
     }
 }
 
@@ -153,16 +158,24 @@ fn measure_arborui_collection(
                     Scenario::Model | Scenario::Cold | Scenario::InitialRender => {
                         unreachable!("setup scenarios are handled separately")
                     }
-                    Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
-                        unreachable!("table scenarios are handled separately")
+                    Scenario::VisibleUpdate
+                    | Scenario::OffscreenUpdate
+                    | Scenario::PageUp
+                    | Scenario::AppendFollowing
+                    | Scenario::AppendPaused => {
+                        unreachable!("other workload scenarios are handled separately")
                     }
                 }
                 assert_bounded(application.application().constructed_rows());
                 black_box(application)
             })
         }
-        Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
-            panic!("background updates are table scenarios")
+        Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused => {
+            panic!("scenario belongs to another workload")
         }
     }
 }
@@ -220,13 +233,91 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     Scenario::Model
                     | Scenario::Cold
                     | Scenario::InitialRender
-                    | Scenario::Reverse => unreachable!("scenario is handled separately"),
+                    | Scenario::Reverse
+                    | Scenario::PageUp
+                    | Scenario::AppendFollowing
+                    | Scenario::AppendPaused => unreachable!("scenario is handled separately"),
                 }
                 assert_bounded(application.application().constructed_rows());
                 black_box(application)
             })
         }
-        Scenario::Reverse => panic!("reverse is not a table scenario"),
+        Scenario::Reverse
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused => panic!("scenario is not a table scenario"),
+    }
+}
+
+fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
+    let history_limit = item_count.saturating_mul(2).max(1);
+    match scenario {
+        Scenario::Model => measure(|| LogLab::new(item_count, history_limit, WIDTH, HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let application = TestApp::new(
+                LogLab::new(item_count, history_limit, WIDTH, HEIGHT),
+                base_size(),
+            );
+            assert_bounded(application.application().constructed_rows());
+            application
+        }),
+        Scenario::InitialRender => {
+            let model = LogLab::new(item_count, history_limit, WIDTH, HEIGHT);
+            measure(move || {
+                let application = TestApp::new(model, base_size());
+                assert_bounded(application.application().constructed_rows());
+                application
+            })
+        }
+        Scenario::PageUp
+        | Scenario::Resize
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused
+        | Scenario::UnchangedRedraw => {
+            let mut application = TestApp::new(
+                LogLab::new(item_count, history_limit, WIDTH, HEIGHT),
+                base_size(),
+            );
+            if matches!(scenario, Scenario::AppendPaused) {
+                application.send(LogAction::PageUp);
+            }
+            measure(move || {
+                match scenario {
+                    Scenario::PageUp => {
+                        application.send(LogAction::PageUp);
+                    }
+                    Scenario::Resize => {
+                        application.resize(Size::new(WIDTH, RESIZED_HEIGHT));
+                    }
+                    Scenario::AppendFollowing | Scenario::AppendPaused => {
+                        application.send(LogAction::Append {
+                            count: 1,
+                            generation: 1,
+                        });
+                    }
+                    Scenario::UnchangedRedraw => {
+                        application.send(LogAction::End);
+                    }
+                    Scenario::Model
+                    | Scenario::Cold
+                    | Scenario::InitialRender
+                    | Scenario::PageDown
+                    | Scenario::Selection
+                    | Scenario::Reverse
+                    | Scenario::VisibleUpdate
+                    | Scenario::OffscreenUpdate => {
+                        unreachable!("scenario is handled separately")
+                    }
+                }
+                assert_bounded(application.application().constructed_rows());
+                black_box(application)
+            })
+        }
+        Scenario::PageDown
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate => panic!("scenario is not a scrolling-log scenario"),
     }
 }
 
@@ -234,6 +325,7 @@ fn measure_ratatui(workload: Workload, scenario: Scenario, item_count: usize) ->
     match workload {
         Workload::Collection(mode) => measure_ratatui_collection(mode, scenario, item_count),
         Workload::Table => measure_ratatui_table(scenario, item_count),
+        Workload::Log => measure_ratatui_log(scenario, item_count),
     }
 }
 
@@ -296,8 +388,12 @@ fn measure_ratatui_collection(
                     Scenario::Model | Scenario::Cold | Scenario::InitialRender => {
                         unreachable!("setup scenarios are handled separately")
                     }
-                    Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
-                        unreachable!("table scenarios are handled separately")
+                    Scenario::VisibleUpdate
+                    | Scenario::OffscreenUpdate
+                    | Scenario::PageUp
+                    | Scenario::AppendFollowing
+                    | Scenario::AppendPaused => {
+                        unreachable!("other workload scenarios are handled separately")
                     }
                 }
                 draw_test_terminal(&mut terminal, &mut application).expect("frame must draw");
@@ -305,8 +401,12 @@ fn measure_ratatui_collection(
                 black_box((application, terminal))
             })
         }
-        Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
-            panic!("background updates are table scenarios")
+        Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused => {
+            panic!("scenario belongs to another workload")
         }
     }
 }
@@ -370,7 +470,10 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     Scenario::Model
                     | Scenario::Cold
                     | Scenario::InitialRender
-                    | Scenario::Reverse => unreachable!("scenario is handled separately"),
+                    | Scenario::Reverse
+                    | Scenario::PageUp
+                    | Scenario::AppendFollowing
+                    | Scenario::AppendPaused => unreachable!("scenario is handled separately"),
                 }
                 draw_test_table_terminal(&mut terminal, &mut application)
                     .expect("table frame must draw");
@@ -378,7 +481,91 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
                 black_box((application, terminal))
             })
         }
-        Scenario::Reverse => panic!("reverse is not a table scenario"),
+        Scenario::Reverse
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused => panic!("scenario is not a table scenario"),
+    }
+}
+
+fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
+    let history_limit = item_count.saturating_mul(2).max(1);
+    match scenario {
+        Scenario::Model => measure(|| RatatuiLogLab::new(item_count, history_limit, WIDTH, HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let mut application = RatatuiLogLab::new(item_count, history_limit, WIDTH, HEIGHT);
+            let mut terminal =
+                Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+            draw_test_log_terminal(&mut terminal, &mut application)
+                .expect("initial scrolling-log frame must draw");
+            assert_bounded(application.semantic_state().constructed_rows);
+            (application, terminal)
+        }),
+        Scenario::InitialRender => {
+            let mut application = RatatuiLogLab::new(item_count, history_limit, WIDTH, HEIGHT);
+            measure(move || {
+                let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT))
+                    .expect("test terminal must open");
+                draw_test_log_terminal(&mut terminal, &mut application)
+                    .expect("initial scrolling-log frame must draw");
+                assert_bounded(application.semantic_state().constructed_rows);
+                (application, terminal)
+            })
+        }
+        Scenario::PageUp
+        | Scenario::Resize
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused
+        | Scenario::UnchangedRedraw => {
+            let mut application = RatatuiLogLab::new(item_count, history_limit, WIDTH, HEIGHT);
+            let mut terminal =
+                Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+            draw_test_log_terminal(&mut terminal, &mut application)
+                .expect("initial scrolling-log frame must draw");
+            if matches!(scenario, Scenario::AppendPaused) {
+                application.apply(LogAction::PageUp);
+                draw_test_log_terminal(&mut terminal, &mut application)
+                    .expect("paused scrolling-log baseline must draw");
+            }
+            measure(move || {
+                match scenario {
+                    Scenario::PageUp => application.apply(LogAction::PageUp),
+                    Scenario::Resize => {
+                        terminal.backend_mut().resize(WIDTH, RESIZED_HEIGHT);
+                        application.apply(LogAction::Resize {
+                            width: WIDTH,
+                            height: RESIZED_HEIGHT,
+                        });
+                    }
+                    Scenario::AppendFollowing | Scenario::AppendPaused => {
+                        application.apply(LogAction::Append {
+                            count: 1,
+                            generation: 1,
+                        });
+                    }
+                    Scenario::UnchangedRedraw => application.apply(LogAction::End),
+                    Scenario::Model
+                    | Scenario::Cold
+                    | Scenario::InitialRender
+                    | Scenario::PageDown
+                    | Scenario::Selection
+                    | Scenario::Reverse
+                    | Scenario::VisibleUpdate
+                    | Scenario::OffscreenUpdate => {
+                        unreachable!("scenario is handled separately")
+                    }
+                }
+                draw_test_log_terminal(&mut terminal, &mut application)
+                    .expect("scrolling-log frame must draw");
+                assert_bounded(application.semantic_state().constructed_rows);
+                black_box((application, terminal))
+            })
+        }
+        Scenario::PageDown
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate => panic!("scenario is not a scrolling-log scenario"),
     }
 }
 
@@ -433,6 +620,7 @@ fn parse_workload(value: &str) -> Result<Workload, Box<dyn Error>> {
         "fixed" => Ok(Workload::Collection(CollectionMode::Fixed)),
         "variable" => Ok(Workload::Collection(CollectionMode::Variable)),
         "table" => Ok(Workload::Table),
+        "log" => Ok(Workload::Log),
         _ => Err(format!("unknown workload: {value}").into()),
     }
 }
@@ -449,6 +637,9 @@ fn parse_scenario(value: &str) -> Result<Scenario, Box<dyn Error>> {
         "unchanged-redraw" => Ok(Scenario::UnchangedRedraw),
         "visible-update" => Ok(Scenario::VisibleUpdate),
         "offscreen-update" => Ok(Scenario::OffscreenUpdate),
+        "page-up" => Ok(Scenario::PageUp),
+        "append-following" => Ok(Scenario::AppendFollowing),
+        "append-paused" => Ok(Scenario::AppendPaused),
         _ => Err(format!("unknown scenario: {value}").into()),
     }
 }

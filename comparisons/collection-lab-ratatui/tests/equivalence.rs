@@ -1,15 +1,69 @@
 //! Matched semantic and character-frame contracts.
 
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
 };
 use arborui_test::{Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, CountingBackend, RatatuiCollectionLab, RatatuiTableLab, SemanticState,
-    TableSemanticState, draw_terminal, draw_test_frame, draw_test_table_frame,
+    ComparisonAction, CountingBackend, LogSemanticState, RatatuiCollectionLab, RatatuiLogLab,
+    RatatuiTableLab, SemanticState, TableSemanticState, draw_terminal, draw_test_frame,
+    draw_test_log_frame, draw_test_table_frame,
 };
+
+#[test]
+fn canonical_scrolling_log_trace_matches_semantics_and_characters() {
+    let mut arborui = TestApp::new(LogLab::new(100, 110, 48, 12), Size::new(48, 12));
+    let mut ratatui = RatatuiLogLab::new(100, 110, 48, 12);
+    let mut terminal = Terminal::new(TestBackend::new(48, 12)).expect("test terminal must open");
+
+    assert_log_frame(&arborui, &mut ratatui, &mut terminal);
+    for action in [
+        LogAction::PageUp,
+        LogAction::Append {
+            count: 2,
+            generation: 1,
+        },
+        LogAction::End,
+        LogAction::Append {
+            count: 12,
+            generation: 2,
+        },
+        LogAction::Resize {
+            width: 38,
+            height: 10,
+        },
+        LogAction::Home,
+        LogAction::Down,
+    ] {
+        apply_arborui_log(&mut arborui, action);
+        ratatui.apply(action);
+        if let LogAction::Resize { width, height } = action {
+            terminal.backend_mut().resize(width, height);
+        }
+        assert_log_frame(&arborui, &mut ratatui, &mut terminal);
+    }
+
+    assert_eq!(ratatui.semantic_state().retained_records, 110);
+    assert_eq!(ratatui.semantic_state().generation, 2);
+    assert!(!ratatui.semantic_state().follows_tail);
+}
+
+#[test]
+fn scrolling_log_construction_is_bounded_at_one_million_records() {
+    let arborui = TestApp::new(LogLab::new(1_000_000, 1_000_000, 48, 12), Size::new(48, 12));
+    let mut ratatui = RatatuiLogLab::new(1_000_000, 1_000_000, 48, 12);
+    let mut terminal = Terminal::new(TestBackend::new(48, 12)).expect("test terminal must open");
+    let frame = draw_test_log_frame(&mut terminal, &mut ratatui)
+        .expect("Ratatui scrolling-log frame must draw");
+
+    assert_eq!(arborui.application().constructed_rows(), 10);
+    assert_eq!(ratatui.semantic_state().constructed_rows, 10);
+    assert_eq!(arborui_log_state(&arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), frame);
+    assert!(frame.contains("Δelta"));
+}
 
 #[test]
 fn canonical_table_trace_matches_semantics_and_characters() {
@@ -310,6 +364,37 @@ fn arborui_table_state(app: &TestApp<TableLab>) -> TableSemanticState {
 
 fn apply_arborui_table(app: &mut TestApp<TableLab>, action: TableAction) {
     if let TableAction::Resize { width, height } = action {
+        app.resize(Size::new(width, height));
+    } else {
+        app.send(action);
+    }
+}
+
+fn assert_log_frame(
+    arborui: &TestApp<LogLab>,
+    ratatui: &mut RatatuiLogLab,
+    terminal: &mut Terminal<TestBackend>,
+) {
+    let frame =
+        draw_test_log_frame(terminal, ratatui).expect("Ratatui scrolling-log frame must draw");
+    assert_eq!(arborui_log_state(arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), frame);
+}
+
+fn arborui_log_state(app: &TestApp<LogLab>) -> LogSemanticState {
+    LogSemanticState {
+        scroll_offset: app.application().model().scroll_offset(),
+        follows_tail: app.application().model().follows_tail(),
+        viewport_height: app.application().model().viewport_height(),
+        visible_range: app.application().model().visible_range(),
+        constructed_rows: app.application().constructed_rows(),
+        retained_records: app.application().model().records().len(),
+        generation: app.application().model().generation(),
+    }
+}
+
+fn apply_arborui_log(app: &mut TestApp<LogLab>, action: LogAction) {
+    if let LogAction::Resize { width, height } = action {
         app.resize(Size::new(width, height));
     } else {
         app.send(action);

@@ -400,8 +400,12 @@ The measured incremental path now reuses retained whole-frame geometry when no
 layout-affecting change occurred, committed logical content when no change at all
 occurred, and a conservative damaged-row band for paint-only work. The table
 slice broadens evidence to responsive columns, Unicode cells, resize, and
-deterministic background updates without stabilizing a widget API. Scrolling
-logs, overlays, Unicode grapheme stress beyond ordinary table cells, resize
-storms, and live ingress should establish whether the same bottlenecks generalize
-before another local optimization. Select and reusable table requirements can
-extend the pilot separately.
+deterministic background updates without stabilizing a widget API. The bounded
+scrolling-log slice adds chronological history, follow-tail behavior, paused
+viewport anchoring through eviction, deterministic append batches, and flat
+construction through one million records. Paused append skips ArborUI layout
+and backend output, while active scrolling remains substantially faster in the
+direct Ratatui adapter. Overlays, Unicode grapheme stress beyond single-cell
+labels, resize storms, and live ingress should establish whether the same
+bottlenecks generalize before another local optimization. Select and reusable
+table requirements can extend the pilot separately.

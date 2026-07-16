@@ -1,9 +1,41 @@
 //! Application evidence through the public ArborUI facades.
 
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
 };
 use arborui_test::{Key, KeyCode, Point, Size, TestApp};
+
+#[test]
+fn scrolling_log_is_bounded_and_paused_appends_preserve_the_view() {
+    let mut application =
+        TestApp::new(LogLab::new(1_000_000, 1_000_000, 48, 12), Size::new(48, 12));
+    assert_eq!(application.application().constructed_rows(), 10);
+    assert!(application.frame().characters().contains("Δelta"));
+
+    application.send(LogAction::PageUp);
+    let before = application.frame().characters();
+    application.send(LogAction::Append {
+        count: 4,
+        generation: 1,
+    });
+
+    assert!(!application.application().model().follows_tail());
+    assert_eq!(application.application().model().records().len(), 1_000_000);
+    assert_eq!(application.application().model().generation(), 1);
+    assert_eq!(application.frame().characters(), before);
+    assert_eq!(application.application().constructed_rows(), 12);
+}
+
+#[test]
+fn scrolling_log_keyboard_append_advances_the_producer_generation() {
+    let mut application = TestApp::new(LogLab::new(100, 110, 48, 12), Size::new(48, 12));
+
+    application.key(KeyCode::Character('a'));
+
+    assert_eq!(application.application().model().records().len(), 101);
+    assert_eq!(application.application().model().generation(), 1);
+    assert!(application.application().model().follows_tail());
+}
 
 #[test]
 fn table_keeps_selection_through_updates_and_resize() {

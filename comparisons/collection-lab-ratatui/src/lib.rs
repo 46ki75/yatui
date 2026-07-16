@@ -3,8 +3,8 @@
 use std::{convert::Infallible, num::NonZeroUsize};
 
 use arborui_example_collection_lab::{
-    CollectionMode, FixedHeightProvider, TableAction, TableModel, VariableHeightProvider,
-    VisibleRange,
+    CollectionMode, FixedHeightProvider, LogAction, LogModel, TableAction, TableModel,
+    VariableHeightProvider, VisibleRange,
 };
 use ratatui::{
     Frame, Terminal,
@@ -19,6 +19,7 @@ const OVERSCAN_ROWS: usize = 2;
 const OVERSCAN_CELLS: usize = 3;
 const HEADER: &str = "Arrows/Page/Home/End move | Enter selects | v mode | r reverse | q quit";
 const TABLE_HEADER: &str = "Arrows/Page/Home/End move | Enter selects | u updates | q quit";
+const LOG_HEADER: &str = "Up/Down/Page/Home/End scroll | a appends | q quit";
 
 /// One framework-neutral action in the matched scenario.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +87,25 @@ pub struct TableSemanticState {
     pub generation: u64,
 }
 
+/// Observable state of the matched scrolling-log workload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LogSemanticState {
+    /// Controlled row scroll offset.
+    pub scroll_offset: usize,
+    /// Whether appends keep the viewport at the tail.
+    pub follows_tail: bool,
+    /// Application-owned data viewport height.
+    pub viewport_height: usize,
+    /// Record range constructed by the latest render.
+    pub visible_range: VisibleRange,
+    /// Number of rows constructed by the latest render.
+    pub constructed_rows: usize,
+    /// Number of records currently retained.
+    pub retained_records: usize,
+    /// Latest accepted producer generation.
+    pub generation: u64,
+}
+
 #[derive(Clone, Debug)]
 struct Item {
     key: u64,
@@ -112,6 +132,12 @@ pub struct RatatuiCollectionLab {
 /// Ratatui adapter around the framework-neutral table model.
 pub struct RatatuiTableLab {
     model: TableModel,
+    constructed_rows: usize,
+}
+
+/// Ratatui adapter around the framework-neutral scrolling-log model.
+pub struct RatatuiLogLab {
+    model: LogModel,
     constructed_rows: usize,
 }
 
@@ -606,6 +632,113 @@ impl RatatuiTableLab {
     }
 }
 
+impl RatatuiLogLab {
+    /// Creates generated bounded history with explicit terminal dimensions.
+    #[must_use]
+    pub fn new(initial_count: usize, history_limit: usize, width: u16, height: u16) -> Self {
+        Self {
+            model: LogModel::new(initial_count, history_limit, width, height),
+            constructed_rows: 0,
+        }
+    }
+
+    /// Applies one deterministic application action without drawing.
+    pub fn apply(&mut self, action: LogAction) {
+        self.model.apply(action);
+    }
+
+    /// Returns the dimensions expected by the next draw.
+    #[must_use]
+    pub const fn terminal_size(&self) -> (u16, u16) {
+        self.model.terminal_size()
+    }
+
+    /// Returns the shared application model.
+    #[must_use]
+    pub const fn model(&self) -> &LogModel {
+        &self.model
+    }
+
+    /// Returns current observable application state.
+    #[must_use]
+    pub fn semantic_state(&self) -> LogSemanticState {
+        LogSemanticState {
+            scroll_offset: self.model.scroll_offset(),
+            follows_tail: self.model.follows_tail(),
+            viewport_height: self.model.viewport_height(),
+            visible_range: self.model.visible_range(),
+            constructed_rows: self.constructed_rows,
+            retained_records: self.model.records().len(),
+            generation: self.model.generation(),
+        }
+    }
+
+    /// Paints one complete desired scrolling-log frame.
+    pub fn render(&mut self, frame: &mut Frame<'_>) {
+        let range = self.model.visible_range();
+        self.constructed_rows = range.len();
+        let area = frame.area();
+        let buffer = frame.buffer_mut();
+        paint_clipped(buffer, area.x, area.y, LOG_HEADER, Style::default());
+        if area.width == 0 || area.height < 2 {
+            return;
+        }
+
+        let panel_y = area.y.saturating_add(1);
+        let panel_height = u16::try_from(self.model.viewport_height().saturating_add(2))
+            .unwrap_or(u16::MAX)
+            .min(area.height.saturating_sub(1));
+        if panel_height < 2 {
+            return;
+        }
+        let border_style = Style::new().fg(Color::LightCyan);
+        paint_horizontal_border(buffer, area.x, panel_y, area.width, '┌', '┐', border_style);
+        paint_clipped(
+            buffer,
+            area.x.saturating_add(1),
+            panel_y,
+            " Bounded scrolling log ",
+            border_style,
+        );
+        let bottom = panel_y.saturating_add(panel_height.saturating_sub(1));
+        paint_horizontal_border(buffer, area.x, bottom, area.width, '└', '┘', border_style);
+        for y in panel_y.saturating_add(1)..bottom {
+            buffer[(area.x, y)].set_symbol("│").set_style(border_style);
+            if area.width > 1 {
+                buffer[(area.x.saturating_add(area.width - 1), y)]
+                    .set_symbol("│")
+                    .set_style(border_style);
+            }
+        }
+
+        let content_x = area.x.saturating_add(1);
+        let content_width = area.width.saturating_sub(2);
+        let content_top = i32::from(panel_y.saturating_add(1));
+        let content_bottom = i32::from(bottom);
+        let mut logical_y =
+            content_top.saturating_sub(i32::try_from(range.local_offset()).unwrap_or(i32::MAX));
+        for record in self
+            .model
+            .records()
+            .iter()
+            .skip(range.start())
+            .take(range.len())
+        {
+            if logical_y >= content_top && logical_y < content_bottom {
+                paint_clipped_width(
+                    buffer,
+                    content_x,
+                    u16::try_from(logical_y).unwrap_or(u16::MAX),
+                    record.text(),
+                    content_width,
+                    Style::new(),
+                );
+            }
+            logical_y = logical_y.saturating_add(1);
+        }
+    }
+}
+
 /// Draws one application frame into Ratatui's logical test terminal.
 pub fn draw_test_frame(
     terminal: &mut Terminal<TestBackend>,
@@ -658,6 +791,32 @@ pub fn draw_table_terminal<B: Backend>(
     Ok(())
 }
 
+/// Draws one scrolling-log frame into Ratatui's logical test terminal.
+pub fn draw_test_log_frame(
+    terminal: &mut Terminal<TestBackend>,
+    application: &mut RatatuiLogLab,
+) -> Result<String, Infallible> {
+    draw_test_log_terminal(terminal, application)?;
+    Ok(buffer_characters(terminal.backend().buffer()))
+}
+
+/// Draws a scrolling log without materializing a character snapshot.
+pub fn draw_test_log_terminal(
+    terminal: &mut Terminal<TestBackend>,
+    application: &mut RatatuiLogLab,
+) -> Result<(), Infallible> {
+    draw_log_terminal(terminal, application)
+}
+
+/// Draws one complete scrolling-log frame through any Ratatui backend.
+pub fn draw_log_terminal<B: Backend>(
+    terminal: &mut Terminal<B>,
+    application: &mut RatatuiLogLab,
+) -> Result<(), B::Error> {
+    terminal.draw(|frame| application.render(frame))?;
+    Ok(())
+}
+
 /// Converts a Ratatui buffer to ArborUI's full-width character snapshot format.
 #[must_use]
 pub fn buffer_characters(buffer: &Buffer) -> String {
@@ -704,5 +863,13 @@ fn paint_clipped(buffer: &mut Buffer, x: u16, y: u16, text: &str, style: Style) 
         return;
     }
     let width = buffer.area.right().saturating_sub(x);
+    buffer.set_stringn(x, y, text, usize::from(width), style);
+}
+
+fn paint_clipped_width(buffer: &mut Buffer, x: u16, y: u16, text: &str, width: u16, style: Style) {
+    if y < buffer.area.top() || y >= buffer.area.bottom() || x >= buffer.area.right() {
+        return;
+    }
+    let width = width.min(buffer.area.right().saturating_sub(x));
     buffer.set_stringn(x, y, text, usize::from(width), style);
 }

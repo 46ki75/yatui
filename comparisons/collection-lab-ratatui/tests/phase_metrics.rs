@@ -6,7 +6,7 @@ use arborui::{
     AppRunner, Capabilities, HeadlessRenderOutcome, RenderTimings, Renderer, Size, UiEvent,
 };
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
 };
 
 const ITEM_COUNT: usize = 100_000;
@@ -33,6 +33,32 @@ enum TableScenario {
     Selection,
     VisibleUpdate,
     OffscreenUpdate,
+}
+
+#[derive(Clone, Copy)]
+enum LogScenario {
+    PageUp,
+    Resize,
+    AppendFollowing,
+    AppendPaused,
+}
+
+impl LogScenario {
+    const ALL: [Self; 4] = [
+        Self::PageUp,
+        Self::Resize,
+        Self::AppendFollowing,
+        Self::AppendPaused,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::PageUp => "page-up",
+            Self::Resize => "resize",
+            Self::AppendFollowing => "append-following",
+            Self::AppendPaused => "append-paused",
+        }
+    }
 }
 
 impl TableScenario {
@@ -117,6 +143,145 @@ fn reports_arborui_table_phase_metrics() {
     for scenario in TableScenario::ALL {
         print_table_totals(scenario.name(), measure_table_scenario(scenario), SAMPLES);
     }
+}
+
+#[test]
+#[ignore = "runs the optimized scrolling-log phase measurement matrix"]
+fn reports_arborui_scrolling_log_phase_metrics() {
+    println!(
+        "| Workload | Scenario | Update ns | View ns | Stage/reconcile ns | Layout ns | Paint ns | Diff ns | Commit ns | Post-commit ns | Render total ns |"
+    );
+    println!("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+
+    print_workload_totals(
+        "Scrolling log",
+        "initial-render",
+        measure_log_initial_render(),
+        INITIAL_SAMPLES,
+    );
+    for scenario in LogScenario::ALL {
+        print_workload_totals(
+            "Scrolling log",
+            scenario.name(),
+            measure_log_scenario(scenario),
+            SAMPLES,
+        );
+    }
+}
+
+fn measure_log_initial_render() -> Totals {
+    let mut totals = Totals::default();
+    for _ in 0..INITIAL_SAMPLES {
+        let mut runner = new_log_runner(LogLab::new(
+            ITEM_COUNT,
+            ITEM_COUNT.saturating_mul(2),
+            WIDTH,
+            HEIGHT,
+        ));
+        let rendered = runner
+            .render_headless_timed()
+            .expect("initial scrolling-log frame must render");
+        assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+        add_timings(
+            &mut totals.render,
+            rendered.timings.expect("render must include timings"),
+        );
+    }
+    totals
+}
+
+fn measure_log_scenario(scenario: LogScenario) -> Totals {
+    let mut runner = new_log_runner(LogLab::new(
+        ITEM_COUNT,
+        ITEM_COUNT.saturating_mul(2),
+        WIDTH,
+        HEIGHT,
+    ));
+    assert_eq!(
+        runner
+            .render_headless()
+            .expect("initial scrolling-log frame must render"),
+        HeadlessRenderOutcome::Committed
+    );
+    if matches!(scenario, LogScenario::AppendPaused) {
+        send_log(&mut runner, LogAction::PageUp);
+        render_log_reset(&mut runner);
+    }
+
+    let mut totals = Totals::default();
+    for generation in 1..=SAMPLES {
+        let update_started = Instant::now();
+        apply_log_scenario(&mut runner, scenario, u64::from(generation));
+        totals.update = totals.update.saturating_add(update_started.elapsed());
+        let rendered = runner
+            .render_headless_timed()
+            .expect("scrolling-log scenario frame must render");
+        assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+        add_timings(
+            &mut totals.render,
+            rendered.timings.expect("render must include timings"),
+        );
+        reset_log_scenario(&mut runner, scenario);
+    }
+    totals
+}
+
+fn apply_log_scenario(runner: &mut AppRunner<LogLab>, scenario: LogScenario, generation: u64) {
+    match scenario {
+        LogScenario::PageUp => send_log(runner, LogAction::PageUp),
+        LogScenario::Resize => resize_log(runner, RESIZED_HEIGHT),
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => send_log(
+            runner,
+            LogAction::Append {
+                count: 1,
+                generation,
+            },
+        ),
+    }
+}
+
+fn reset_log_scenario(runner: &mut AppRunner<LogLab>, scenario: LogScenario) {
+    match scenario {
+        LogScenario::PageUp => {
+            send_log(runner, LogAction::End);
+            render_log_reset(runner);
+        }
+        LogScenario::Resize => {
+            resize_log(runner, HEIGHT);
+            render_log_reset(runner);
+        }
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => {}
+    }
+}
+
+fn send_log(runner: &mut AppRunner<LogLab>, action: LogAction) {
+    runner.enqueue(action);
+    runner.process_pending();
+}
+
+fn resize_log(runner: &mut AppRunner<LogLab>, height: u16) {
+    runner
+        .dispatch_ui_event(UiEvent::Resize(Size::new(WIDTH, height)))
+        .expect("scrolling-log resize event must dispatch");
+    runner.process_pending();
+}
+
+fn render_log_reset(runner: &mut AppRunner<LogLab>) {
+    assert_eq!(
+        runner
+            .render_headless()
+            .expect("scrolling-log reset frame must render"),
+        HeadlessRenderOutcome::Committed
+    );
+}
+
+fn new_log_runner(application: LogLab) -> AppRunner<LogLab> {
+    let size = Size::new(WIDTH, HEIGHT);
+    AppRunner::new(
+        application,
+        size,
+        Renderer::new(size, Capabilities::default().width_policy),
+    )
 }
 
 fn measure_table_initial_render() -> Totals {
@@ -395,8 +560,12 @@ fn print_totals(mode: CollectionMode, scenario: &str, totals: Totals, samples: u
 }
 
 fn print_table_totals(scenario: &str, totals: Totals, samples: u32) {
+    print_workload_totals("Table", scenario, totals, samples);
+}
+
+fn print_workload_totals(workload: &str, scenario: &str, totals: Totals, samples: u32) {
     println!(
-        "| Table | {scenario} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+        "| {workload} | {scenario} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
         average(totals.update, samples),
         average(totals.render.view_construction, samples),
         average(totals.render.staging_reconciliation, samples),

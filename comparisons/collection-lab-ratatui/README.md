@@ -1,8 +1,9 @@
 # Collection Lab Ratatui Comparison
 
 This package contains matched Ratatui implementations for ArborUI's Collection
-Lab list and table experiments. It is excluded from the product workspace so
-Ratatui does not become part of ArborUI's facade-only example dependency graph.
+Lab list, table, and scrolling-log experiments. It is excluded from the product
+workspace so Ratatui does not become part of ArborUI's facade-only example
+dependency graph.
 
 ## Comparison Contract
 
@@ -17,6 +18,12 @@ ArborUI composes facade-only rows and controlled scrolling; Ratatui renders the
 same window through its stateful `Table`. This is an application-level prototype,
 not a stabilized ArborUI table widget.
 
+The scrolling-log workload shares a bounded chronological history, stable
+monotonic record keys, follow-tail policy, paused viewport anchoring, Unicode
+records, and deterministic producer batches. Both sides construct only the
+visible and overscanned records. It is application policy rather than a
+stabilized log widget.
+
 The deterministic contract covers:
 
 - Fixed and variable-height rendering at explicit terminal sizes
@@ -28,6 +35,8 @@ The deterministic contract covers:
 - Responsive table columns with Unicode content
 - Visible and offscreen background updates at stable row keys
 - Table character-frame parity through narrow and wide resizes
+- Bounded scrolling-log history and construction at one million records
+- Follow-tail append, paused append, eviction anchoring, and log-frame parity
 
 The timing benchmark measures a complete logical application turn: update,
 visible-row construction, paint, and logical terminal diff. It excludes model
@@ -80,6 +89,10 @@ Table background updates are deterministic messages so the benchmark isolates
 the serialized application and render turn. It does not include producer sleep,
 thread scheduling, or queue latency; Focus Queue separately covers bounded
 external ingress.
+
+Scrolling-log appends use the same deterministic boundary. A paused append
+changes retained application state while preserving the visible projection;
+follow-tail append moves the viewport to the newest retained record.
 
 | Rows | Mode | ArborUI | Ratatui |
 | ---: | --- | ---: | ---: |
@@ -182,6 +195,43 @@ The offscreen update changes shared application state but no visible row. ArborU
 therefore submits no patch, while Ratatui's empty production diff still emits
 reset commands and one flush.
 
+## Scrolling Log Workload Result
+
+The same environment produced these Criterion point estimates for the matched
+bounded scrolling log. Action cases start with 100,000 records; untimed reset
+turns restore page and resize baselines:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Line scrolling, 1,000 records | 141 us | 19.7 us |
+| Line scrolling, 100,000 records | 136 us | 19.3 us |
+| Line scrolling, 1,000,000 records | 147 us | 18.1 us |
+| Cold initial render, 100,000 records | 12.7 ms | 12.6 ms |
+| Page Up | 162 us | 20.0 us |
+| Resize 48x12 to 48x16 | 249 us | 36.4 us |
+| Append while following | 182 us | 18.5 us |
+| Append while paused | 21.6 us | 15.6 us |
+
+Both line-scrolling paths remain flat through one million retained records.
+Ratatui's direct application adapter paints the visible records into its
+immediate buffer with substantially less complete-turn overhead for active log
+movement. ArborUI's retained path becomes most effective when a paused append
+does not alter visible content.
+
+The corresponding production serializer result is:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Initial render | 5273/3718/1 | 1331/918/1 |
+| Page Up | 2060/1522/1 | 472/408/1 |
+| Resize | 7170/4982/1 | 1823/1268/2 |
+| Append while following | 2330/1726/1 | 609/519/1 |
+| Append while paused | 0/0/0 | 19/12/1 |
+
+Paused append confirms the same no-visible-change behavior as the table's
+offscreen update: ArborUI submits no patch, while Ratatui's empty production
+diff emits reset commands and one flush.
+
 ## Allocation And Retained Memory
 
 `comparison-memory-metrics` runs every case in a separate release-mode process
@@ -222,6 +272,14 @@ The table model retains 152,000 bytes at 1,000 rows, 15,200,000 at 100,000, and
 152,000,000 at one million on both sides. With model construction outside the
 profiled boundary, first-render retained framework memory stays exactly 127,844
 bytes for ArborUI and 82,944 bytes for Ratatui at all three sizes.
+
+The shared log model retains 96,000 bytes at 1,000 records, 9,600,000 at
+100,000, and 96,000,000 at one million on both sides. With model construction
+outside the profiled boundary, first-render retained framework memory remains
+approximately 101,200 bytes for ArborUI and exactly 82,944 bytes for Ratatui across
+all three sizes. The first append into the configured spare history grows the
+shared `VecDeque`; that application-owned capacity allocation is present on
+both sides and is not attributed to either framework.
 
 At 100,000 rows, table operation cells below are `allocated bytes/retained
 bytes`:
@@ -271,6 +329,21 @@ The table phase report adds:
 | Selection | 316 | 10,358 | 0 | 14,768 | 4,125 | 48,446 |
 | Visible update | 580 | 11,389 | 81,373 | 50,918 | 2,830 | 165,987 |
 | Offscreen update | 403 | 11,240 | 0 | 1,365 | 2,145 | 34,773 |
+
+The scrolling-log phase report adds:
+
+| Scenario | Update | Stage/reconcile | Layout | Paint | Diff | Render total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Initial render | 0 | 16,976 | 103,629 | 83,950 | 31,207 | 263,414 |
+| Page Up | 492 | 4,905 | 58,632 | 61,406 | 11,202 | 150,966 |
+| Resize | 1,971 | 4,732 | 64,640 | 81,978 | 19,149 | 188,356 |
+| Append while following | 25,213 | 4,773 | 51,458 | 61,662 | 13,432 | 146,304 |
+| Append while paused | 21,476 | 4,581 | 0 | 1,519 | 2,406 | 21,266 |
+
+Paused append performs the shared record-formatting and storage update but
+reconciles to unchanged visible content, skips layout, and reuses committed
+logical output. Follow-tail append changes the visible window and follows the
+normal layout and paint path.
 
 Ordinary preparation skips layout when reconciliation reports only paint or no
 changes. Paint-only work against the exact committed renderer generation clones

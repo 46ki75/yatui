@@ -458,11 +458,14 @@ bounded million-row construction, idle policy, expanded complete logical-turn
 timings, production Crossterm serialization counts, isolated allocation and
   retained-memory measurements, ArborUI render-phase attribution, and
   full-reference-checked retained-layout, unchanged-frame, and damaged-row
-  optimizations. A facade-only virtualized table workload now adds responsive
+  optimizations. A facade-only virtualized table workload adds responsive
   columns, Unicode cells, stable selection, resize, deterministic visible and
-  offscreen producer updates, and a matched Ratatui `Table` baseline. A reusable
-  table control, select control, broader workload baselines, and the complete
-  production-scale proof remain planned.
+  offscreen producer updates, and a matched Ratatui `Table` baseline. A matched
+  bounded scrolling-log workload now adds follow-tail and paused append policy,
+  stable eviction anchoring, million-record bounded construction, and complete
+  latency, output, phase, and memory probes. A reusable table control, select
+  control, broader workload baselines, and the complete production-scale proof
+  remain planned.
 
 Deliver:
 
@@ -493,9 +496,10 @@ layout reuse, unchanged-frame logical-content reuse, and conservative
 full-width damaged-row repaint are now checked against a separately callable
 full-layout/full-paint reference and improve the measured collection turns;
 the matched table workload confirms bounded million-row turns and demonstrates
-that offscreen model updates can reuse unchanged committed output. Scrolling-log,
-overlay, resize-storm, and live-ingress evidence plus finer-grained incremental
-work remain open.
+that offscreen model updates can reuse unchanged committed output. The matched
+scrolling log confirms flat million-record turns and the same reuse for paused
+producer appends. Overlay, resize-storm, and live-ingress evidence plus
+finer-grained incremental work remain open.
 
 Deliver:
 

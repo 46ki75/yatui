@@ -23,6 +23,14 @@ const TABLE_ACTIONS: [&str; 7] = [
     "offscreen-update",
     "unchanged-redraw",
 ];
+const LOG_ACTIONS: [&str; 6] = [
+    "cold",
+    "page-up",
+    "resize",
+    "append-following",
+    "append-paused",
+    "unchanged-redraw",
+];
 
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
@@ -83,6 +91,24 @@ fn reports_isolated_memory_metrics() {
             }
         }
         assert_viewport_bounded(framework, "table", &initial_render);
+
+        for scenario in LOG_ACTIONS {
+            let metrics = run_probe(framework, "log", scenario, ACTION_ITEM_COUNT);
+            assert_released(framework, "log", scenario, metrics);
+            print_metrics(framework, "log", scenario, ACTION_ITEM_COUNT, metrics);
+        }
+        let mut initial_render = Vec::new();
+        for scenario in ["model", "initial-render"] {
+            for item_count in ITEM_COUNTS {
+                let metrics = run_probe(framework, "log", scenario, item_count);
+                assert_released(framework, "log", scenario, metrics);
+                print_metrics(framework, "log", scenario, item_count, metrics);
+                if scenario == "initial-render" {
+                    initial_render.push(metrics);
+                }
+            }
+        }
+        assert_viewport_bounded(framework, "log", &initial_render);
     }
 }
 

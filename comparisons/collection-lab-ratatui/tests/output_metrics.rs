@@ -9,11 +9,11 @@ use arborui::{
     Capabilities, CrosstermBackend as ArboruiCrosstermBackend, FramePatch, TerminalBackend,
 };
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiTableLab, draw_test_table_terminal,
-    draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiTableLab, draw_test_log_terminal,
+    draw_test_table_terminal, draw_test_terminal,
 };
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
 };
 use arborui_test::{Size as ArboruiSize, TestApp};
 use ratatui::{
@@ -47,6 +47,35 @@ enum TableScenario {
     Selection,
     VisibleUpdate,
     OffscreenUpdate,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LogScenario {
+    InitialRender,
+    PageUp,
+    Resize,
+    AppendFollowing,
+    AppendPaused,
+}
+
+impl LogScenario {
+    const ALL: [Self; 5] = [
+        Self::InitialRender,
+        Self::PageUp,
+        Self::Resize,
+        Self::AppendFollowing,
+        Self::AppendPaused,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::InitialRender => "initial-render",
+            Self::PageUp => "page-up",
+            Self::Resize => "resize",
+            Self::AppendFollowing => "append-following",
+            Self::AppendPaused => "append-paused",
+        }
+    }
 }
 
 impl TableScenario {
@@ -197,6 +226,38 @@ fn reports_table_ansi_output_metrics() {
     }
 }
 
+#[test]
+fn reports_scrolling_log_ansi_output_metrics() {
+    println!("| Scenario | Framework | ANSI bytes | Writer calls | Flushes |");
+    println!("| --- | --- | ---: | ---: | ---: |");
+
+    for scenario in LogScenario::ALL {
+        let arborui = arborui_log_metrics(scenario);
+        let ratatui = ratatui_log_metrics(scenario);
+        println!(
+            "| {} | ArborUI | {} | {} | {} |",
+            scenario.name(),
+            arborui.bytes,
+            arborui.writes,
+            arborui.flushes
+        );
+        println!(
+            "| {} | Ratatui | {} | {} | {} |",
+            scenario.name(),
+            ratatui.bytes,
+            ratatui.writes,
+            ratatui.flushes
+        );
+
+        if matches!(scenario, LogScenario::AppendPaused) {
+            assert_eq!(arborui, OutputMetrics::default());
+        } else {
+            assert!(arborui.bytes > 0);
+            assert!(ratatui.bytes > 0);
+        }
+    }
+}
+
 fn arborui_metrics(mode: CollectionMode, scenario: Scenario) -> OutputMetrics {
     let mut application = TestApp::new(
         CollectionLab::new(mode, ITEM_COUNT, usize::from(HEIGHT - 4)),
@@ -288,6 +349,39 @@ fn patch_after_table(
     application: &mut TestApp<TableLab>,
     action: TableAction,
 ) -> Option<FramePatch> {
+    let previous_count = application.frame_patches().len();
+    application.send(action);
+    application.frame_patches().get(previous_count).cloned()
+}
+
+fn arborui_log_metrics(scenario: LogScenario) -> OutputMetrics {
+    let mut application = TestApp::new(
+        LogLab::new(ITEM_COUNT, ITEM_COUNT.saturating_mul(2), WIDTH, HEIGHT),
+        ArboruiSize::new(WIDTH, HEIGHT),
+    );
+    if matches!(scenario, LogScenario::AppendPaused) {
+        application.send(LogAction::PageUp);
+    }
+    let patch = match scenario {
+        LogScenario::InitialRender => application.last_frame_patch().cloned(),
+        LogScenario::PageUp => patch_after_log(&mut application, LogAction::PageUp),
+        LogScenario::Resize => {
+            let previous_count = application.frame_patches().len();
+            application.resize(ArboruiSize::new(WIDTH, RESIZED_HEIGHT));
+            application.frame_patches().get(previous_count).cloned()
+        }
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => patch_after_log(
+            &mut application,
+            LogAction::Append {
+                count: 1,
+                generation: 1,
+            },
+        ),
+    };
+    patch.map_or_else(OutputMetrics::default, |patch| serialize_arborui(&patch))
+}
+
+fn patch_after_log(application: &mut TestApp<LogLab>, action: LogAction) -> Option<FramePatch> {
     let previous_count = application.frame_patches().len();
     application.send(action);
     application.frame_patches().get(previous_count).cloned()
@@ -394,6 +488,51 @@ fn ratatui_table_metrics(scenario: TableScenario) -> OutputMetrics {
     draw_test_table_terminal(&mut terminal, &mut application).expect("table frame must draw");
     let current = terminal.backend().buffer().clone();
     if matches!(scenario, TableScenario::Resize) {
+        let blank = Buffer::empty(Rect::new(0, 0, WIDTH, RESIZED_HEIGHT));
+        serialize_ratatui(&blank, &current, true)
+    } else {
+        serialize_ratatui(&previous, &current, false)
+    }
+}
+
+fn ratatui_log_metrics(scenario: LogScenario) -> OutputMetrics {
+    let mut application =
+        RatatuiLogLab::new(ITEM_COUNT, ITEM_COUNT.saturating_mul(2), WIDTH, HEIGHT);
+    let mut terminal =
+        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+    draw_test_log_terminal(&mut terminal, &mut application)
+        .expect("initial scrolling-log frame must draw");
+
+    if matches!(scenario, LogScenario::InitialRender) {
+        let initial = terminal.backend().buffer().clone();
+        let blank = Buffer::empty(Rect::new(0, 0, WIDTH, HEIGHT));
+        return serialize_ratatui(&blank, &initial, false);
+    }
+    if matches!(scenario, LogScenario::AppendPaused) {
+        application.apply(LogAction::PageUp);
+        draw_test_log_terminal(&mut terminal, &mut application)
+            .expect("paused scrolling-log baseline must draw");
+    }
+    let previous = terminal.backend().buffer().clone();
+    let action = match scenario {
+        LogScenario::PageUp => LogAction::PageUp,
+        LogScenario::Resize => {
+            terminal.backend_mut().resize(WIDTH, RESIZED_HEIGHT);
+            LogAction::Resize {
+                width: WIDTH,
+                height: RESIZED_HEIGHT,
+            }
+        }
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => LogAction::Append {
+            count: 1,
+            generation: 1,
+        },
+        LogScenario::InitialRender => unreachable!("initial render returned above"),
+    };
+    application.apply(action);
+    draw_test_log_terminal(&mut terminal, &mut application).expect("scrolling-log frame must draw");
+    let current = terminal.backend().buffer().clone();
+    if matches!(scenario, LogScenario::Resize) {
         let blank = Buffer::empty(Rect::new(0, 0, WIDTH, RESIZED_HEIGHT));
         serialize_ratatui(&blank, &current, true)
     } else {

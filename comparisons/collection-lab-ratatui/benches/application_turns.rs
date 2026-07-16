@@ -3,11 +3,11 @@
 use std::{hint::black_box, time::Duration};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiTableLab, draw_test_table_terminal,
-    draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiTableLab, draw_test_log_terminal,
+    draw_test_table_terminal, draw_test_terminal,
 };
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
 };
 use arborui_test::{Size, TestApp};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -35,6 +35,32 @@ enum TableScenario {
     Resize,
     VisibleUpdate,
     OffscreenUpdate,
+}
+
+#[derive(Clone, Copy)]
+enum LogScenario {
+    PageUp,
+    Resize,
+    AppendFollowing,
+    AppendPaused,
+}
+
+impl LogScenario {
+    const ALL: [Self; 4] = [
+        Self::PageUp,
+        Self::Resize,
+        Self::AppendFollowing,
+        Self::AppendPaused,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::PageUp => "page-up",
+            Self::Resize => "resize",
+            Self::AppendFollowing => "append-following",
+            Self::AppendPaused => "append-paused",
+        }
+    }
 }
 
 impl TableScenario {
@@ -86,6 +112,129 @@ fn application_turns(criterion: &mut Criterion) {
     table_line_navigation(criterion);
     table_cold_initial_render(criterion);
     table_scenario_turns(criterion);
+    log_line_scrolling(criterion);
+    log_cold_initial_render(criterion);
+    log_scenario_turns(criterion);
+}
+
+fn log_line_scrolling(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("comparison/log-turn/line-scrolling");
+    group.throughput(Throughput::Elements(1));
+    for item_count in [1_000usize, 100_000, 1_000_000] {
+        group.bench_with_input(
+            BenchmarkId::new("arborui", item_count),
+            &item_count,
+            |bencher, count| {
+                let mut application = TestApp::new(
+                    LogLab::new(*count, *count, BASE_WIDTH, BASE_HEIGHT),
+                    base_size(),
+                );
+                let mut up = true;
+                bencher.iter(|| {
+                    let action = if up { LogAction::Up } else { LogAction::Down };
+                    up = !up;
+                    black_box(application.send(action));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("ratatui", item_count),
+            &item_count,
+            |bencher, count| {
+                let (mut application, mut terminal) = ratatui_log_fixture(*count);
+                let mut up = true;
+                bencher.iter(|| {
+                    let action = if up { LogAction::Up } else { LogAction::Down };
+                    up = !up;
+                    ratatui_log_turn(&mut application, &mut terminal, action);
+                    black_box(application.semantic_state());
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn log_cold_initial_render(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("comparison/log-turn/cold-initial-render");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("arborui", |bencher| {
+        bencher.iter(|| {
+            black_box(TestApp::new(
+                LogLab::new(ITEM_COUNT, ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
+                base_size(),
+            ));
+        });
+    });
+    group.bench_function("ratatui", |bencher| {
+        bencher.iter(|| {
+            let mut application =
+                RatatuiLogLab::new(ITEM_COUNT, ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT);
+            let mut terminal = Terminal::new(TestBackend::new(BASE_WIDTH, BASE_HEIGHT))
+                .expect("test terminal must open");
+            draw_test_log_terminal(&mut terminal, &mut application)
+                .expect("initial scrolling-log frame must draw");
+            black_box((application, terminal));
+        });
+    });
+    group.finish();
+}
+
+fn log_scenario_turns(criterion: &mut Criterion) {
+    for scenario in LogScenario::ALL {
+        let mut group =
+            criterion.benchmark_group(format!("comparison/log-turn/{}", scenario.name()));
+        group.throughput(Throughput::Elements(1));
+        group.bench_function("arborui", |bencher| {
+            let mut application = TestApp::new(
+                LogLab::new(
+                    ITEM_COUNT,
+                    ITEM_COUNT.saturating_add(1_000_000),
+                    BASE_WIDTH,
+                    BASE_HEIGHT,
+                ),
+                base_size(),
+            );
+            prepare_arborui_log(&mut application, scenario);
+            let mut generation = 1u64;
+            bencher.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let started = std::time::Instant::now();
+                    arborui_log_turn(&mut application, scenario, generation);
+                    elapsed = elapsed.saturating_add(started.elapsed());
+                    reset_arborui_log(&mut application, scenario);
+                    generation = generation.saturating_add(1);
+                }
+                black_box(application.application().model().generation());
+                elapsed
+            });
+        });
+        group.bench_function("ratatui", |bencher| {
+            let (mut application, mut terminal) =
+                ratatui_log_fixture_with_limit(ITEM_COUNT, ITEM_COUNT.saturating_add(1_000_000));
+            prepare_ratatui_log(&mut application, &mut terminal, scenario);
+            let mut generation = 1u64;
+            bencher.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let started = std::time::Instant::now();
+                    ratatui_log_scenario_turn(
+                        &mut application,
+                        &mut terminal,
+                        scenario,
+                        generation,
+                    );
+                    elapsed = elapsed.saturating_add(started.elapsed());
+                    reset_ratatui_log(&mut application, &mut terminal, scenario);
+                    generation = generation.saturating_add(1);
+                }
+                black_box(application.semantic_state());
+                elapsed
+            });
+        });
+        group.finish();
+    }
 }
 
 fn table_line_navigation(criterion: &mut Criterion) {
@@ -614,6 +763,130 @@ fn ratatui_table_turn(
 ) {
     application.apply(action);
     draw_test_table_terminal(terminal, application).expect("table frame must draw");
+}
+
+fn prepare_arborui_log(application: &mut TestApp<LogLab>, scenario: LogScenario) {
+    if matches!(scenario, LogScenario::AppendPaused) {
+        application.send(LogAction::PageUp);
+    }
+}
+
+fn arborui_log_turn(application: &mut TestApp<LogLab>, scenario: LogScenario, generation: u64) {
+    match scenario {
+        LogScenario::PageUp => {
+            black_box(application.send(LogAction::PageUp));
+        }
+        LogScenario::Resize => {
+            black_box(application.resize(Size::new(BASE_WIDTH, RESIZED_HEIGHT)));
+        }
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => {
+            black_box(application.send(LogAction::Append {
+                count: 1,
+                generation,
+            }));
+        }
+    }
+}
+
+fn reset_arborui_log(application: &mut TestApp<LogLab>, scenario: LogScenario) {
+    match scenario {
+        LogScenario::PageUp => {
+            application.send(LogAction::End);
+        }
+        LogScenario::Resize => {
+            application.resize(base_size());
+        }
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => {}
+    }
+}
+
+fn prepare_ratatui_log(
+    application: &mut RatatuiLogLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: LogScenario,
+) {
+    if matches!(scenario, LogScenario::AppendPaused) {
+        ratatui_log_turn(application, terminal, LogAction::PageUp);
+    }
+}
+
+fn ratatui_log_scenario_turn(
+    application: &mut RatatuiLogLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: LogScenario,
+    generation: u64,
+) {
+    match scenario {
+        LogScenario::PageUp => {
+            ratatui_log_turn(application, terminal, LogAction::PageUp);
+        }
+        LogScenario::Resize => {
+            terminal.backend_mut().resize(BASE_WIDTH, RESIZED_HEIGHT);
+            ratatui_log_turn(
+                application,
+                terminal,
+                LogAction::Resize {
+                    width: BASE_WIDTH,
+                    height: RESIZED_HEIGHT,
+                },
+            );
+        }
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => ratatui_log_turn(
+            application,
+            terminal,
+            LogAction::Append {
+                count: 1,
+                generation,
+            },
+        ),
+    }
+}
+
+fn reset_ratatui_log(
+    application: &mut RatatuiLogLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: LogScenario,
+) {
+    match scenario {
+        LogScenario::PageUp => ratatui_log_turn(application, terminal, LogAction::End),
+        LogScenario::Resize => {
+            terminal.backend_mut().resize(BASE_WIDTH, BASE_HEIGHT);
+            ratatui_log_turn(
+                application,
+                terminal,
+                LogAction::Resize {
+                    width: BASE_WIDTH,
+                    height: BASE_HEIGHT,
+                },
+            );
+        }
+        LogScenario::AppendFollowing | LogScenario::AppendPaused => {}
+    }
+}
+
+fn ratatui_log_fixture(item_count: usize) -> (RatatuiLogLab, Terminal<TestBackend>) {
+    ratatui_log_fixture_with_limit(item_count, item_count)
+}
+
+fn ratatui_log_fixture_with_limit(
+    item_count: usize,
+    history_limit: usize,
+) -> (RatatuiLogLab, Terminal<TestBackend>) {
+    let mut application = RatatuiLogLab::new(item_count, history_limit, BASE_WIDTH, BASE_HEIGHT);
+    let mut terminal =
+        Terminal::new(TestBackend::new(BASE_WIDTH, BASE_HEIGHT)).expect("test terminal must open");
+    draw_test_log_terminal(&mut terminal, &mut application)
+        .expect("initial scrolling-log frame must draw");
+    (application, terminal)
+}
+
+fn ratatui_log_turn(
+    application: &mut RatatuiLogLab,
+    terminal: &mut Terminal<TestBackend>,
+    action: LogAction,
+) {
+    application.apply(action);
+    draw_test_log_terminal(terminal, application).expect("scrolling-log frame must draw");
 }
 
 fn viewport_height(terminal_height: u16) -> usize {
