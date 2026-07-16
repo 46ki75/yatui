@@ -61,6 +61,9 @@ comparison-bench-smoke:
 comparison-bench:
     CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 bench --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --bench application_turns --locked -- --noplot
 
+comparison-output-metrics:
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 test --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --test output_metrics --locked -- --nocapture
+
 package-check:
     bash scripts/check-package-contents.sh
 

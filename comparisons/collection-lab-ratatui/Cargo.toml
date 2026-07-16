@@ -6,8 +6,9 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+arborui = { path = "../../crates/arborui" }
 arborui-example-collection-lab = { path = "../../examples/collection-lab" }
-ratatui = { version = "=0.30.2", default-features = false }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 arborui-test = { path = "../../crates/arborui-test" }

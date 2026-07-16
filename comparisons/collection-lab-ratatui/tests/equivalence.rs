@@ -35,6 +35,24 @@ fn canonical_variable_trace_has_matching_semantics_and_characters() {
 }
 
 #[test]
+fn isolated_scenarios_have_matching_semantics_and_characters() {
+    for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
+        for action in [
+            ComparisonAction::PageDown,
+            ComparisonAction::End,
+            ComparisonAction::SelectActive,
+            ComparisonAction::Reverse,
+            ComparisonAction::Resize {
+                width: 48,
+                height: 16,
+            },
+        ] {
+            assert_isolated_scenario(mode, action);
+        }
+    }
+}
+
+#[test]
 fn construction_is_bounded_at_one_million_rows() {
     let size = Size::new(48, 12);
     let arborui = TestApp::new(
@@ -76,14 +94,22 @@ fn stable_identity_survives_unmount_and_reverse() {
 
 #[test]
 fn unchanged_redraw_has_no_logical_output_and_idle_does_no_work() {
+    let mut arborui = TestApp::new(
+        CollectionLab::new(CollectionMode::Fixed, 1_000_000, 8),
+        Size::new(48, 12),
+    );
     let mut application = RatatuiCollectionLab::new(CollectionMode::Fixed, 1_000_000, 48, 12);
     let mut terminal =
         Terminal::new(CountingBackend::new(48, 12)).expect("counting terminal must open");
     draw_terminal(&mut terminal, &mut application).expect("initial frame must draw");
     terminal.backend_mut().reset_counts();
+    let patch_count = arborui.frame_patches().len();
 
+    arborui.send(Message::Home);
+    application.apply(ComparisonAction::Home);
     draw_terminal(&mut terminal, &mut application).expect("unchanged frame must draw");
 
+    assert_eq!(arborui.frame_patches().len(), patch_count);
     assert_eq!(terminal.backend().changed_cells(), 0);
     assert_eq!(terminal.backend().draws(), 1);
     assert_eq!(terminal.backend().flushes(), 1);
@@ -126,6 +152,8 @@ fn resize_recomputes_the_same_window() {
         Size::new(40, 8),
     );
     let mut ratatui = RatatuiCollectionLab::new(CollectionMode::Fixed, 10_000, 40, 8);
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("test terminal must open");
+    draw_test_frame(&mut terminal, &mut ratatui).expect("initial frame must draw");
 
     apply_arborui(
         &mut arborui,
@@ -138,9 +166,32 @@ fn resize_recomputes_the_same_window() {
         width: 40,
         height: 14,
     });
-    let mut terminal = Terminal::new(TestBackend::new(40, 14)).expect("test terminal must open");
+    terminal.backend_mut().resize(40, 14);
     let ratatui_frame =
         draw_test_frame(&mut terminal, &mut ratatui).expect("resized frame must draw");
+
+    assert_eq!(arborui_state(&arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), ratatui_frame);
+}
+
+fn assert_isolated_scenario(mode: CollectionMode, action: ComparisonAction) {
+    let initial_size = Size::new(48, 12);
+    let mut arborui = TestApp::new(CollectionLab::new(mode, 100_000, 8), initial_size);
+    let mut ratatui = RatatuiCollectionLab::new(mode, 100_000, 48, 12);
+    let mut terminal = Terminal::new(TestBackend::new(48, 12)).expect("test terminal must open");
+    let initial_ratatui =
+        draw_test_frame(&mut terminal, &mut ratatui).expect("initial frame must draw");
+
+    assert_eq!(arborui_state(&arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), initial_ratatui);
+
+    apply_arborui(&mut arborui, action);
+    ratatui.apply(action);
+    if let ComparisonAction::Resize { width, height } = action {
+        terminal.backend_mut().resize(width, height);
+    }
+    let ratatui_frame =
+        draw_test_frame(&mut terminal, &mut ratatui).expect("scenario frame must draw");
 
     assert_eq!(arborui_state(&arborui), ratatui.semantic_state());
     assert_eq!(arborui.frame().characters(), ratatui_frame);

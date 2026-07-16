@@ -454,10 +454,10 @@ Collection Lab separately proves fixed and cached variable-height visible-range
 construction, overscan, stable-key selection, collection focus, resize, and
 bounded retained tree size through facade-only tests and benchmarks. A matched,
 isolated Ratatui 0.30.2 package now proves semantic and character-frame parity,
-bounded million-row construction, idle policy, and first complete logical-turn
-timings. Production output bytes, allocations, retained memory, phase timings,
-table and select controls, and the complete production-scale proof remain
-planned.
+bounded million-row construction, idle policy, expanded complete logical-turn
+timings, and production Crossterm serialization counts. Allocations, retained
+memory, phase timings, table and select controls, and the complete
+production-scale proof remain planned.
 
 Deliver:
 

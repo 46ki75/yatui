@@ -182,7 +182,47 @@ latency difference is not attributable to one isolated subsystem: ArborUI's
 message-to-settled-frame path includes runtime settlement, retained
 reconciliation, layout, hit geometry, and cloned test patches, while the matched
 Ratatui application directly updates and redraws an immediate buffer. Production
-ANSI bytes, allocation counts, and retained memory are not measured yet.
+allocation counts and retained memory are not measured yet.
+
+The matched benchmark now also isolates cold initial render, Page Down, End,
+resize, selection, reverse, and unchanged redraw at 100,000 items. One optimized
+run on the same machine produced these point estimates:
+
+| Scenario | ArborUI fixed | Ratatui fixed | ArborUI variable | Ratatui variable |
+| --- | ---: | ---: | ---: | ---: |
+| Cold initial render | 20.6 ms | 28.7 ms | 19.5 ms | 24.0 ms |
+| Page Down | 118 us | 14.0 us | 143 us | 12.1 us |
+| End | 97.7 us | 10.5 us | 103 us | 13.0 us |
+| Resize 48x12 to 48x16 | 142 us | 20.0 us | 143 us | 22.9 us |
+| Selection | 80.1 us | 9.49 us | 91.4 us | 11.8 us |
+| Reverse | 817 us | 755 us | 839 us | 780 us |
+| Unchanged redraw | 78.8 us | 8.60 us | 87.9 us | 11.7 us |
+
+Cold initial render includes model generation, harness creation, and first draw.
+The other cases use persistent fixtures with untimed deterministic resets. Cold
+initial render and fixed Page Down had wide intervals and substantial outliers.
+Reverse mainly measures shared O(n) application policy because both sides reverse
+100,000 items and rebuild their providers.
+
+The production-output probe passes real ArborUI patches and Ratatui buffer diffs
+through their Crossterm backends under fixed 48x12 ANSI16 conditions. The cells
+below are `bytes/writer calls/flushes`; writer calls are serializer callbacks,
+not operating-system syscalls.
+
+| Scenario | ArborUI fixed | Ratatui fixed | ArborUI variable | Ratatui variable |
+| --- | ---: | ---: | ---: | ---: |
+| Initial render | 5265/3722/1 | 861/542/1 | 5259/3722/1 | 1047/689/1 |
+| Page Down | 875/623/1 | 189/159/1 | 1243/905/1 | 249/216/1 |
+| End | 1055/767/1 | 207/183/1 | 1095/797/1 | 247/213/1 |
+| Resize | 7161/4986/1 | 1101/695/2 | 7155/4986/1 | 1407/926/2 |
+| Selection | 785/588/1 | 157/132/1 | 1145/864/1 | 209/183/1 |
+| Reverse | 875/623/1 | 189/159/1 | 899/641/1 | 213/177/1 |
+| Unchanged redraw | 0/0/0 | 19/12/1 | 0/0/0 | 19/12/1 |
+
+Ratatui resize includes its production clear and therefore two flushes. ArborUI
+suppresses empty prepared patches before backend output; Ratatui's empty diff
+still emits 19 bytes of reset commands and flushes. Transport-level buffering,
+allocations, retained memory, and phase costs remain separate measurements.
 
 The widget unit tests independently verify checkbox activation and that a dialog
 owns focus, handles Escape, and replaces lower pointer targets.
@@ -269,16 +309,11 @@ requirements open:
 
 - Select and table controls driven by application requirements
 - Form validation and broader loading or error recovery
-- A matched Ratatui-plus-application implementation
-- Application-level measurements for code size, latency, allocations, emitted
-  bytes, idle work, and retained memory
+- Application-level measurements for code size, allocations, and retained memory
 - Integration with a real service, subprocess, or async executor rather than the
   demonstration thread producer
 
-The next application evidence should separate production ANSI bytes,
-allocations, retained memory, and phase costs before selecting optimization
-work. The matched logical comparison should add initial render, Page Down, End,
-resize, selection, reverse, and explicit unchanged-redraw timing rather than
-generalizing from alternating one-row navigation. Select and table requirements
+The next application evidence should separate allocations, retained memory, and
+phase costs before selecting optimization work. Select and table requirements
 can then extend the pilot without treating this local collection experiment as a
 stabilized widget API.
