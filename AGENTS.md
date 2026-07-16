@@ -20,6 +20,7 @@
 - Install the pinned Node tools with `pnpm install --frozen-lockfile`; this also installs Lefthook. Rust is pinned to the 1.85.0 MSRV.
 - Run `just ci` for the normal gate. It runs, in order, formatting/Markdown checks, Clippy with all targets and features, workspace tests with all features, then warning-free docs.
 - Use `cargo test -p <package> <test-name> --all-features` for a focused unit test or `cargo test -p <package> --test <integration-test> --all-features` for one integration target.
+- When a review identifies a bug, first add and run a focused regression test that reproduces the failure, then implement the fix and rerun the test to confirm it passes.
 - `just ci` skips the ignored native terminal lifecycle test. Run `just test-pty` separately; it requires a native PTY or ConPTY and forces one test thread.
 - Use `just bench-smoke` to validate benchmark code without recording a Criterion baseline. Use `just package-check` after package metadata or package-content changes.
 - Workspace lints forbid unsafe code and deny `unwrap`; public API additions also need documentation because CI promotes warnings to errors.
