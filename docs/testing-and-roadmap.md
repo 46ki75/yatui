@@ -486,9 +486,10 @@ without a configured bound or observable pressure signal.
 
 Status: in progress. Milestone 11 established the first application-level
 allocation, retained-memory, and phase-timing baseline. Whole-frame retained
-layout reuse is now checked against a separately callable full-layout reference
-and improves the measured paint-only collection turns; cross-workload evidence
-and finer-grained incremental work remain open.
+layout reuse and unchanged-frame logical-content reuse are now checked against a
+separately callable full-layout/full-paint reference and improve the measured
+collection turns; cross-workload evidence and finer-grained incremental work
+remain open.
 
 Deliver:
 

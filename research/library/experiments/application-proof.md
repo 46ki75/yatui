@@ -235,12 +235,13 @@ measured result.
 
 At 100,000 fixed-height items, Page Down allocates and retains 122,177/44,884
 bytes in ArborUI and 0/0 in Ratatui. After retained-layout reuse, unchanged
-redraw allocates and retains 56,789/39,892 bytes in ArborUI and 0/0 in Ratatui.
+redraw allocates and retains 56,648/39,892 bytes in ArborUI and 0/0 in Ratatui.
 Resize is
 302,653/123,428 versus 165,888/165,888 bytes, while reverse is
-2,520,281/2,444,860 versus 2,400,008/2,400,008 bytes. Variable-height results
-show the same shape. These are operation-local allocations; fixture allocations
-made before profiling are intentionally excluded.
+2,520,281/2,444,860 versus 2,400,008/2,400,008 bytes. Variable-height unchanged
+redraw allocates and retains 47,880/35,492 bytes after the same optimization.
+These are operation-local allocations; fixture allocations made before profiling
+are intentionally excluded.
 
 Opt-in ArborUI instrumentation now separates application view construction,
 staged reconciliation, layout, paint, diff, commit, post-commit refresh, and
@@ -249,10 +250,15 @@ not read the clock, and the transactional write-before-commit ordering is
 unchanged. In the 100-sample headless comparison, fixed selection and unchanged
 redraw now spend zero measured time in layout and complete in 54.9 and 45.7
 microseconds, down from 75.7 and 69.7. Variable selection and unchanged redraw
-complete in 56.9 and 56.0 microseconds, down from 83.7 and 101.0. Layout-required
-Page Down, resize, and reverse turns continue through complete layout. Ratatui
-does not expose equivalent internal boundaries, so only its complete-turn
-timings are compared.
+initially completed in 56.9 and 56.0 microseconds, down from 83.7 and 101.0. The
+next measured optimization reuses the exact committed logical frame when
+reconciliation reports no change, reducing fixed and variable unchanged-redraw
+render totals further to 14.7 and 16.8 microseconds. Owned buffer, hit-map, and
+grapheme state are still cloned so preparation remains transactional. A renderer
+generation mismatch, including physical-state invalidation, returns to complete
+painting. Layout-required Page Down, resize, and reverse turns continue through
+complete layout. Ratatui does not expose equivalent internal boundaries, so only
+its complete-turn timings are compared.
 
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
@@ -351,9 +357,10 @@ requirements open:
 - Integration with a real service, subprocess, or async executor rather than the
   demonstration thread producer
 
-The first measured optimization reuses retained whole-frame geometry when
-reconciliation proves that no layout-affecting change occurred. Paint remains
-the largest phase for those turns, so the next narrow experiment should address
-paint work without weakening full-reference or transactional correctness
-contracts. Select and table requirements can extend the pilot separately without
-treating this local collection experiment as a stabilized widget API.
+The measured incremental path now reuses retained whole-frame geometry when no
+layout-affecting change occurred and committed logical content when no change at
+all occurred. Paint remains the largest phase for paint-only selection turns, so
+the next narrow experiment should skip clean paint work without weakening
+full-reference or transactional correctness contracts. Select and table
+requirements can extend the pilot separately without treating this local
+collection experiment as a stabilized widget API.

@@ -578,8 +578,8 @@ impl UiTree {
         Ok(report)
     }
 
-    /// Reconciles and paints a complete headless frame, reusing committed
-    /// geometry when no layout-affecting change is found.
+    /// Reconciles and prepares a complete headless frame, reusing committed
+    /// geometry and unchanged committed logical content when safe.
     pub fn prepare<Message>(
         &self,
         element: &Element<'_, Message>,
@@ -609,13 +609,18 @@ impl UiTree {
         renderer: &mut Renderer,
         force_layout: bool,
     ) -> Result<PreparedUiFrame, UiError> {
+        let renderer_matches = self.renderer_state == Some(renderer.state_id());
         let mut staged = self.clone_for_staging();
         let width_policy = renderer.width_policy();
         staged.stage_frame(element, viewport, width_policy)?;
         let layout = staged.prepare_frame_layout(element, viewport, width_policy, force_layout)?;
-        let frame = renderer.prepare(viewport, layout.cursor, |canvas| {
-            staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
-        })?;
+        let frame = if !force_layout && renderer_matches && staged.pending == Invalidation::None {
+            renderer.prepare_reused(layout.cursor)?
+        } else {
+            renderer.prepare(viewport, layout.cursor, |canvas| {
+                staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
+            })?
+        };
         staged.finish_frame();
         Ok(PreparedUiFrame {
             owner: self.owner.clone(),
@@ -625,8 +630,8 @@ impl UiTree {
         })
     }
 
-    /// Reconciles and paints a complete headless frame while measuring each
-    /// preparation phase and reusing clean committed geometry.
+    /// Reconciles and prepares a complete headless frame while measuring each
+    /// phase and reusing clean committed geometry and logical content.
     pub fn prepare_timed<Message>(
         &self,
         element: &Element<'_, Message>,
@@ -634,6 +639,7 @@ impl UiTree {
         renderer: &mut Renderer,
     ) -> Result<(PreparedUiFrame, UiPreparationTimings), UiError> {
         let staging_started = Instant::now();
+        let renderer_matches = self.renderer_state == Some(renderer.state_id());
         let mut staged = self.clone_for_staging();
         let width_policy = renderer.width_policy();
         staged.stage_frame(element, viewport, width_policy)?;
@@ -650,10 +656,14 @@ impl UiTree {
             )
         };
 
-        let (frame, renderer_timings) =
+        let (frame, renderer_timings) = if renderer_matches && staged.pending == Invalidation::None
+        {
+            renderer.prepare_reused_timed(layout.cursor)?
+        } else {
             renderer.prepare_timed(viewport, layout.cursor, |canvas| {
                 staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
-            })?;
+            })?
+        };
         staged.finish_frame();
         let prepared = PreparedUiFrame {
             owner: self.owner.clone(),
@@ -1462,6 +1472,8 @@ fn inherit_style(inherited: Style, local: Style) -> Style {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::Cell, rc::Rc};
+
     use arborui_core::{Color, CursorShape, Modifier, Size, Style};
     use arborui_layout::{Dimension, FlexDirection, LayoutStyle};
     use arborui_render::PatchCellContent;
@@ -1651,6 +1663,35 @@ mod tests {
                 .expect("committed root exists")
                 .layout()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_preparation_skips_paint_callbacks() -> Result<(), UiError> {
+        let size = Size::new(5, 1);
+        let paint_calls = Rc::new(Cell::new(0));
+        let view = Element::<()>::container([]).paint(0, {
+            let paint_calls = Rc::clone(&paint_calls);
+            move |_, _| {
+                paint_calls.set(paint_calls.get() + 1);
+                Ok(())
+            }
+        });
+        let mut tree = UiTree::new();
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+
+        prepare_and_commit(&mut tree, &view, size, &mut renderer).expect("initial frame commits");
+        assert_eq!(paint_calls.get(), 1);
+
+        let unchanged = tree.prepare(&view, size, &mut renderer)?;
+        assert_eq!(paint_calls.get(), 1);
+        assert!(unchanged.patch().runs.is_empty());
+        assert_eq!(tree.commit(unchanged, &mut renderer), Ok(()));
+
+        renderer.invalidate();
+        let repaint = tree.prepare(&view, size, &mut renderer)?;
+        assert_eq!(paint_calls.get(), 2);
+        assert!(repaint.patch().full_repaint);
         Ok(())
     }
 

@@ -704,6 +704,42 @@ impl Renderer {
         Ok((prepared, FramePreparationTimings { paint, diff }))
     }
 
+    /// Prepares an owned frame from unchanged committed logical content.
+    ///
+    /// The caller must ensure that painting would produce the same buffer and
+    /// hit map. Cursor changes and pending full-repaint requirements are still
+    /// reflected in the returned patch.
+    pub fn prepare_reused(&mut self, cursor: CursorState) -> Result<PreparedFrame, RenderError> {
+        let (next, hit_map, graphemes) = self.clone_current_frame();
+        self.diff_frame(next, hit_map, graphemes, cursor)
+    }
+
+    /// Prepares unchanged committed logical content while measuring each phase.
+    ///
+    /// Cloning the committed frame is reported as paint work; patch construction
+    /// is reported as diff work.
+    pub fn prepare_reused_timed(
+        &mut self,
+        cursor: CursorState,
+    ) -> Result<(PreparedFrame, FramePreparationTimings), RenderError> {
+        let paint_started = Instant::now();
+        let (next, hit_map, graphemes) = self.clone_current_frame();
+        let paint = paint_started.elapsed();
+
+        let diff_started = Instant::now();
+        let prepared = self.diff_frame(next, hit_map, graphemes, cursor)?;
+        let diff = diff_started.elapsed();
+        Ok((prepared, FramePreparationTimings { paint, diff }))
+    }
+
+    fn clone_current_frame(&self) -> (Buffer, HitMap, GraphemeStore) {
+        (
+            self.current.clone(),
+            self.hit_map.clone(),
+            self.graphemes.clone(),
+        )
+    }
+
     fn paint_frame<F>(
         &self,
         size: Size,
@@ -939,6 +975,32 @@ mod tests {
 
         assert!(second.patch().is_empty());
         assert!(!second.patch().full_repaint);
+        Ok(())
+    }
+
+    #[test]
+    fn reused_frame_preserves_content_cursor_and_full_repaint() -> Result<(), RenderError> {
+        let size = Size::new(3, 1);
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let first = renderer.prepare(size, CursorState::HIDDEN, |canvas| {
+            canvas.draw_text(Point::ORIGIN, "abc", Style::default(), None)?;
+            Ok(())
+        })?;
+        assert_eq!(renderer.commit(first), Ok(()));
+
+        let cursor = CursorState::visible(Point::new(1, 0));
+        let reused = renderer.prepare_reused(cursor)?;
+        assert_eq!(reused.buffer(), renderer.current());
+        assert_eq!(reused.hit_map(), renderer.hit_map());
+        assert!(reused.patch().runs.is_empty());
+        assert!(reused.patch().cursor_changed);
+        assert_eq!(renderer.commit(reused), Ok(()));
+
+        renderer.invalidate();
+        let repaint = renderer.prepare_reused(cursor)?;
+        assert!(repaint.patch().full_repaint);
+        assert_eq!(repaint.patch().runs.len(), usize::from(size.height));
+        assert_eq!(repaint.buffer(), renderer.current());
         Ok(())
     }
 

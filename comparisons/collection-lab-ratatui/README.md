@@ -98,13 +98,14 @@ other rows exclude untimed baseline resets.
 | Resize 48x12 to 48x16 | 125 us | 19.4 us | 143 us | 21.6 us |
 | Selection | 55.9 us | 9.50 us | 63.2 us | 11.6 us |
 | Reverse | 852 us | 740 us | 858 us | 720 us |
-| Unchanged redraw | 51.5 us | 8.47 us | 57.4 us | 10.2 us |
+| Unchanged redraw | 15.2 us | 8.59 us | 16.0 us | 10.3 us |
 
 Reverse is primarily the shared O(n) application policy: reversing 100,000
 items and rebuilding providers. Criterion measured selection improvements of
-30.4% fixed and 31.7% variable, and unchanged-redraw improvements of 33.7% fixed
-and 34.4% variable, against the preceding full-layout baseline. Reverse had no
-significant fixed-mode change and remained application dominated.
+30.4% fixed and 31.7% variable against the full-layout baseline. Reusing the
+committed logical frame for a proven unchanged redraw subsequently improved that
+case by 70.5% fixed and 74.2% variable against the immediately preceding stored
+Criterion baseline. Reverse remained application dominated.
 
 The production serializer probe reports `bytes/writer calls/flushes`:
 
@@ -156,7 +157,7 @@ are constructed before profiling.
 | Page Down | 122,177/44,884 | 0/0 | 106,354/42,772 | 0/0 |
 | Resize | 302,653/123,428 | 165,888/165,888 | 267,462/118,988 | 165,888/165,888 |
 | Reverse | 2,520,281/2,444,860 | 2,400,008/2,400,008 | 2,498,714/2,440,700 | 2,400,008/2,400,008 |
-| Unchanged redraw | 56,789/39,892 | 0/0 | 48,030/35,492 | 0/0 |
+| Unchanged redraw | 56,648/39,892 | 0/0 | 47,880/35,492 | 0/0 |
 
 ## ArborUI Phase Attribution
 
@@ -169,27 +170,29 @@ below in nanoseconds, while `comparison-phase-metrics` prints every phase.
 
 | Mode | Scenario | Update | Stage/reconcile | Layout | Paint | Diff | Render total |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Fixed | Initial render | 0 | 12,694 | 50,007 | 44,964 | 29,648 | 158,607 |
-| Fixed | Page Down | 410 | 4,427 | 28,177 | 36,279 | 4,427 | 85,076 |
-| Fixed | End | 644 | 3,875 | 23,268 | 35,091 | 5,743 | 76,976 |
-| Fixed | Resize | 2,331 | 4,194 | 31,160 | 47,026 | 15,688 | 109,936 |
-| Fixed | Selection | 369 | 3,326 | 0 | 39,023 | 3,854 | 54,926 |
-| Fixed | Reverse | 724,113 | 6,517 | 31,444 | 39,838 | 5,346 | 94,944 |
-| Fixed | Unchanged redraw | 320 | 3,269 | 0 | 32,343 | 2,120 | 45,700 |
-| Variable | Initial render | 0 | 11,189 | 55,636 | 57,825 | 13,724 | 156,942 |
-| Variable | Page Down | 456 | 3,125 | 30,555 | 42,110 | 5,899 | 91,884 |
-| Variable | End | 1,284 | 3,958 | 29,400 | 46,280 | 6,073 | 95,328 |
-| Variable | Resize | 1,789 | 3,216 | 33,110 | 51,249 | 16,407 | 115,722 |
-| Variable | Selection | 454 | 2,829 | 0 | 41,139 | 4,742 | 56,922 |
-| Variable | Reverse | 688,731 | 6,425 | 32,895 | 45,592 | 6,343 | 103,399 |
-| Variable | Unchanged redraw | 409 | 2,949 | 0 | 41,492 | 2,433 | 55,966 |
+| Fixed | Initial render | 0 | 12,146 | 51,492 | 45,810 | 28,307 | 157,088 |
+| Fixed | Page Down | 458 | 3,963 | 25,391 | 36,238 | 5,015 | 80,281 |
+| Fixed | End | 755 | 3,806 | 23,488 | 34,061 | 5,009 | 75,122 |
+| Fixed | Resize | 2,744 | 4,298 | 29,798 | 44,376 | 15,095 | 105,024 |
+| Fixed | Selection | 365 | 3,687 | 0 | 33,449 | 4,356 | 50,041 |
+| Fixed | Reverse | 709,661 | 6,440 | 31,063 | 39,010 | 5,113 | 94,687 |
+| Fixed | Unchanged redraw | 306 | 3,483 | 0 | 978 | 2,114 | 14,728 |
+| Variable | Initial render | 0 | 11,174 | 57,793 | 54,901 | 13,756 | 157,272 |
+| Variable | Page Down | 524 | 3,237 | 31,173 | 43,324 | 7,205 | 93,997 |
+| Variable | End | 696 | 3,212 | 27,940 | 43,901 | 6,726 | 91,092 |
+| Variable | Resize | 1,941 | 3,201 | 32,376 | 50,863 | 15,161 | 112,567 |
+| Variable | Selection | 392 | 3,092 | 0 | 43,096 | 5,711 | 62,432 |
+| Variable | Reverse | 670,477 | 5,062 | 32,715 | 46,046 | 5,977 | 102,201 |
+| Variable | Unchanged redraw | 338 | 2,669 | 0 | 1,029 | 2,096 | 16,803 |
 
-Ordinary preparation now skips layout when reconciliation reports only paint or
-no changes, while `UiTree::prepare_full` remains a separately callable reference
-path. Hand-selected and deterministic generated transitions compare complete
-buffers, patches, hit maps, retained geometry, and committed renderer state.
-Selection and unchanged redraw therefore report zero layout time; paint is now
-their largest measured phase. Reverse remains dominated by the application-owned
-O(n) update. Ratatui's internal phase boundaries are not exposed, so its
-comparison remains the complete-turn Criterion result rather than a fabricated
-phase split.
+Ordinary preparation skips layout when reconciliation reports only paint or no
+changes. A no-change result against the exact committed renderer generation also
+clones committed logical state without invoking paint callbacks. Physical-state
+invalidation and renderer mismatch retain complete-paint behavior, while
+`UiTree::prepare_full` remains a separately callable full-layout/full-paint
+reference path. Hand-selected and deterministic generated transitions compare
+complete buffers, patches, hit maps, retained geometry, and committed renderer
+state. Paint remains the largest measured phase for selection. Reverse remains
+dominated by the application-owned O(n) update. Ratatui's internal phase
+boundaries are not exposed, so its comparison remains the complete-turn
+Criterion result rather than a fabricated phase split.
