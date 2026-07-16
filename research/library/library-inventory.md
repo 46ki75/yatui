@@ -41,3 +41,18 @@ the role most relevant to the report. Report depth follows
   unless the project claims that scope.
 - Version, revision, maintenance, and evidence status belong to the individual
   report. This table is an index, not a replacement for those baselines.
+
+## Cross-Project Synthesis
+
+- [`synthesis/lesson-ledger.yaml`](synthesis/lesson-ledger.yaml) contains the
+  normalized, atomic lessons from every report.
+- [`synthesis/capability-matrix.md`](synthesis/capability-matrix.md) compares
+  capability and extension boundaries by project layer.
+- [`synthesis/testing-patterns.md`](synthesis/testing-patterns.md) catalogs test
+  layers and reusable testing patterns.
+- [`synthesis/failure-modes.md`](synthesis/failure-modes.md) groups recurring
+  failure mechanisms and mitigations.
+- [`synthesis/arborui-recommendations.md`](synthesis/arborui-recommendations.md)
+  classifies ArborUI actions.
+- [`synthesis/position.md`](synthesis/position.md) states the provisional product
+  position and the claims still requiring evidence.
