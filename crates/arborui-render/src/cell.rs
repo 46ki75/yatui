@@ -2,7 +2,10 @@ use arborui_core::Style;
 
 use crate::GraphemeId;
 
-/// Stable identity for a hyperlink stored by a future terminal layer.
+/// Stable identity for hyperlink metadata.
+///
+/// The identity does not contain or resolve a link target. A terminal layer
+/// that supports hyperlinks must provide that mapping separately.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct HyperlinkId(u32);
 

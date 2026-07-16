@@ -1,12 +1,19 @@
 use arborui_core::{CursorState, Point};
 
-/// Terminal screen buffer selection.
+/// Terminal screen-buffer selection.
+///
+/// This controls terminal lifecycle state only. It does not define how a
+/// renderer manages inline regions or native scrollback.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum ScreenMode {
-    /// Use the normal screen and preserve scrollback.
+    /// Use the normal screen without clearing existing scrollback.
+    ///
+    /// Full-viewport rendering on this screen does not provide inline-region or
+    /// immutable native-scrollback semantics.
     #[default]
     Main,
-    /// Use the alternate screen for a fullscreen application.
+    /// Use the alternate screen for a fullscreen application that owns its
+    /// viewport.
     Alternate,
 }
 

@@ -36,6 +36,9 @@ cursor rendering.
 ## Terminal Limitations
 
 - Crossterm 0.29 is the only backend.
+- The high-level runtime is supported for alternate-screen fullscreen use.
+  Main-screen lifecycle transitions exist, but inline regions and native
+  scrollback rendering do not yet have defined update or recovery semantics.
 - Raw mode and event reading are process-global. Applications must use one
   active local event reader.
 - Unix `SIGTSTP`, `SIGCONT`, `SIGHUP`, and `SIGTERM` lifecycle integration is
@@ -45,8 +48,11 @@ cursor rendering.
 - Cursor visibility and shape, title, and autowrap are restored to conservative
   usable defaults, not queried pre-session values.
 - Capability detection uses environment hints for color. Enhanced keyboard,
-  synchronized updates, hyperlinks, and explicit width behavior may require
-  explicit capability configuration.
+  synchronized updates, and explicit width behavior may require explicit
+  capability configuration. Capabilities are static for a session and are not
+  renegotiated after resume.
+- The Crossterm backend does not currently resolve or emit OSC 8 hyperlinks and
+  reports hyperlink support as disabled even when configured otherwise.
 - Unicode display depends on the selected `WidthPolicy` and the terminal's own
   width implementation.
 

@@ -243,6 +243,8 @@ Benchmark fixtures should represent applications, not only isolated loops.
 - Diff time
 - Serialization time
 - Bytes emitted
+- Queue depth, queue latency, and high-water marks
+- Full-repaint count
 - Allocations per frame
 - Peak memory
 - Idle CPU usage
@@ -432,11 +434,17 @@ Deliver:
 - Restore-first panic handling with documented unwind and abort behavior
 - Unix stop, continue, and termination-signal integration
 - Event-proxy wakeups that can interrupt blocked terminal polling
+- Explicit contracts for fullscreen alternate-screen rendering and any future
+  inline or native-scrollback modes
+- Capability negotiation state covering queries, partial replies, timeouts,
+  user overrides, downgrade, and renegotiation after resume
 - Compatibility tests for tmux and representative terminal emulators
 - Updated terminal lifecycle and compatibility documentation
 
 Exit criterion: terminal restoration and external-event latency are reliable
-across normal exit, errors, panics, suspension, and supported platforms.
+across normal exit, errors, panics, suspension, and supported platforms; each
+supported screen mode has explicit ownership and recovery semantics; and
+capability transitions cannot leave terminal and backend state in disagreement.
 
 ### Milestone 11: Production-Scale Application Proof
 
@@ -447,6 +455,10 @@ Deliver:
 - A substantial facade-only application with multiple screens, overlays,
   asynchronous work, large collections, and realistic state transitions
 - Application-driven improvements to the public API
+- A virtualized collection prototype with visible-range construction, stable
+  item identity, overscan, measurement, focus, and selection semantics
+- Bounded and observable application ingress with explicit rejection,
+  coalescing, or replace-latest policies and recoverable send errors
 - Common application primitives such as checkbox, select, dialog or modal, and
   table support where the pilot demonstrates a need
 - Layout additions justified by application requirements
@@ -455,7 +467,9 @@ Deliver:
 
 Exit criterion: a non-trivial application can depend only on `arborui` and test
 with `arborui-test` without extensive custom widget infrastructure or access to
-implementation crates.
+implementation crates; large collections do not require constructing the
+complete item subtree; and external producers cannot grow runtime queues
+without a configured bound or observable pressure signal.
 
 ### Milestone 12: Performance Evidence And Incremental Work
 
@@ -463,20 +477,26 @@ Status: planned.
 
 Deliver:
 
+- Phase-level instrumentation for reconciliation, layout, paint, diff,
+  serialization, backend write, queue latency, and full repaints before
+  optimization work begins
 - End-to-end benchmarks for large trees, tables, scrolling logs, overlays,
   Unicode-heavy content, resize storms, and background updates
 - Measurements for latency, allocations, layout, painting, diffing,
   serialization, emitted bytes, and peak memory
 - Reproducible baselines for the current implementation and comparable TUI
   applications
+- A separately callable full-render reference path and generated comparisons
+  between reference and optimized frames and patches
 - Optimizations selected from measured bottlenecks, potentially including
   buffer reuse, text-measurement caching, retained layout state, clean-subtree
-  skipping, and damaged-row scanning
+  skipping, damaged-row scanning, and run-level terminal serialization
 - Tracked benchmark reports or regression thresholds
 
 Exit criterion: performance claims are supported by reproducible
-application-level data, and incremental work introduces no rendering or
-transactional correctness regressions.
+application-level data; optimization starts only after phase measurements are
+available; and incremental work remains equivalent to the full-render reference
+without rendering or transactional correctness regressions.
 
 ### Milestone 13: Release And Ecosystem Maturity
 
@@ -487,7 +507,12 @@ Deliver:
 - Dependency and security policy enforced through `cargo-deny` or equivalent
   auditing
 - A documented decision on coverage reporting and CI enforcement
-- Public API and semver review for the first release
+- Public API and semver review for the first release, separating application,
+  widget-author, backend-author, and internal implementation surfaces
+- Documented project ownership, review and release authority, succession, and
+  security-response expectations
+- A lightweight ADR process for resolving architecture questions before their
+  answers become accidental public contracts
 - Final crates.io availability, package-content, and coordinated publishing
   checks
 - Stable backend contracts before an additional backend is introduced
@@ -498,7 +523,8 @@ additional backends remain application-driven follow-ups rather than release
 requirements.
 
 Exit criterion: users can evaluate adoption risk from documented guarantees,
-and the complete package family can be released reproducibly.
+supported extension surfaces and project ownership are explicit, and the
+complete package family can be released reproducibly.
 
 ## Open Design Questions
 

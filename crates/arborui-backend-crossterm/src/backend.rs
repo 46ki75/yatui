@@ -51,9 +51,12 @@ impl<W: Write + Send> CrosstermBackend<W> {
         })
     }
 
-    /// Overrides detected capabilities.
+    /// Overrides detected capabilities implemented by this backend.
+    ///
+    /// Unsupported output features remain disabled even when requested.
     #[must_use]
-    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+    pub fn with_capabilities(mut self, mut capabilities: Capabilities) -> Self {
+        capabilities.hyperlinks = false;
         self.capabilities = capabilities;
         self
     }
@@ -355,6 +358,17 @@ mod tests {
         let backend = CrosstermBackend::new(Vec::new())?.with_capabilities(capabilities);
 
         assert_eq!(backend.capabilities(), &capabilities);
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_hyperlink_capability_remains_disabled() -> io::Result<()> {
+        let backend = CrosstermBackend::new(Vec::new())?.with_capabilities(Capabilities {
+            hyperlinks: true,
+            ..Capabilities::default()
+        });
+
+        assert!(!backend.capabilities().hyperlinks);
         Ok(())
     }
 

@@ -101,6 +101,13 @@ Capabilities come from environment inspection, protocol queries, known
 terminal behavior, user overrides, and backend limitations. Detection must not
 be scattered across widgets or ANSI serialization code.
 
+Capabilities describe features implemented by both the terminal and backend.
+An override cannot enable a feature for which the backend has no serializer or
+state transition. The current Crossterm backend does not resolve
+`HyperlinkId` values to targets or emit OSC 8 hyperlinks, so it always reports
+`hyperlinks: false`; hyperlink metadata remains available to headless and future
+backends.
+
 Applications may inspect capabilities, but widgets should normally express
 semantic intent and let rendering choose a fallback.
 
@@ -135,6 +142,13 @@ pub enum ScreenMode {
 An OpenTUI-style split footer is a planned extension. Its API should not be
 finalized until main-screen scrolling and immutable scrollback have dedicated
 integration tests.
+
+`ScreenMode` currently selects terminal lifecycle state; it is not a rendering
+strategy. The high-level runtime owns and repaints a complete viewport and is
+therefore supported with `ScreenMode::Alternate`. `ScreenMode::Main` is
+available to lower-level session users, but ArborUI does not yet define inline
+region ownership, append-only history, resize recovery, or repaint semantics
+for native scrollback.
 
 ## Terminal Session
 

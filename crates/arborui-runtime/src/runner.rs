@@ -578,7 +578,12 @@ impl<A: Application> AppRunner<A> {
     }
 }
 
-/// Opens a terminal, runs an application, restores the terminal, and returns the model.
+/// Opens a terminal, runs a fullscreen application, restores the terminal, and
+/// returns the model.
+///
+/// The renderer owns and repaints the complete viewport. Use
+/// [`ScreenMode::Alternate`](arborui_terminal::ScreenMode::Alternate); main-screen
+/// inline regions and native scrollback require a different rendering contract.
 pub fn run<A, B>(
     application: A,
     backend: B,
