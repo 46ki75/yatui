@@ -44,9 +44,11 @@ coverage-ci: test-cov
 
 bench-smoke:
     cargo test -p arborui --bench stabilization --all-features
+    cargo test -p arborui-example-collection-lab --bench visible_ranges --all-features
 
 bench:
     cargo bench -p arborui --bench stabilization --all-features -- --noplot
+    cargo bench -p arborui-example-collection-lab --bench visible_ranges --all-features -- --noplot
 
 package-check:
     bash scripts/check-package-contents.sh

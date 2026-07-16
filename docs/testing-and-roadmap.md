@@ -448,12 +448,13 @@ capability transitions cannot leave terminal and backend state in disagreement.
 
 ### Milestone 11: Production-Scale Application Proof
 
-Status: planned. Focus Queue now contains three application-driven slices: a
-controlled modal edit form and a second screen with externally produced updates,
-cooperative cancellation, stale-result rejection, explicit settlement,
-recoverable errors, and bounded observable reject-new ingress with deterministic
-facade-only pressure tests. Virtualization, table/select controls, and the
-complete production-scale proof remain planned.
+Status: in progress. Focus Queue contains controlled modal editing, external
+work, cancellation, settlement, recovery, and bounded observable ingress.
+Collection Lab separately proves fixed and cached variable-height visible-range
+construction, overscan, stable-key selection, collection focus, resize, and
+bounded retained tree size through facade-only tests and benchmarks. Table and
+select controls, comparative evidence, and the complete production-scale proof
+remain planned.
 
 Deliver:
 

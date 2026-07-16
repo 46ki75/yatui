@@ -1,0 +1,14 @@
+---
+source: examples/collection-lab/tests/collection_lab.rs
+expression: app.frame()
+---
+Arrows/Page/Home/End move | Enter sele
+┌ Variable-height visible range ─────┐
+│Item 000002 / line 3                │
+│Item 000003 / line 1                │
+│Item 000004 / line 1                │
+│Item 000004 / line 2                │
+│Item 000005 / line 1                │
+│Item 000005 / line 2                │
+│Item 000005 / line 3                │
+└────────────────────────────────────┘

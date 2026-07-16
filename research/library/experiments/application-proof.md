@@ -17,8 +17,12 @@ Can external proxy ingress reject new work at a configured bound, expose
 pressure, return ownership of rejected messages, and recover after draining
 without moving producer backlog into an unbounded internal queue?
 
-These are the first three bounded slices of the production-scale application
-proof. They do not attempt to prove virtualization or comparative ergonomics.
+Can a facade-only application construct only a fixed or variable-height visible
+range while preserving stable identity, collection focus, selection, overscan,
+and measured scroll semantics across a million logical rows?
+
+These are the first four bounded slices of the production-scale application
+proof. They do not attempt to prove comparative ergonomics.
 
 ## Implementation
 
@@ -73,6 +77,28 @@ recovered item or terminal result after `Full`, while cancellation remains able
 to stop retries; `Closed` ends the producer. This is one explicit application
 policy, not automatic throttling supplied by the runtime.
 
+The fourth slice adds a separate facade-only
+[`Collection Lab`](../../../examples/collection-lab/) rather than promoting an
+unproven generic widget. Its fixed-height provider calculates a range in constant
+time from row height, viewport height, scroll offset, and row-based overscan. Its
+variable-height provider caches explicit non-zero item heights and prefix sums,
+uses binary search for cell-based overscan, and preserves an item plus intra-item
+anchor when a cached measurement changes.
+
+The application constructs elements only for that range, keys rows with stable
+model IDs, and translates the local range by the scroll offset within its first
+item. Active and selected IDs remain application state. The viewport is one
+stable focus target that implements arrows, Home, End, Page Up, Page Down, and
+selection without making transient rows tab stops. Pointer selection maps a
+visible row back to its stable ID. Reversing item order preserves active and
+selected IDs while rebuilding measurement order.
+
+The variable prototype deliberately measures explicit multiline content rather
+than guessing wrapped text height. Both providers consume an application-owned
+viewport height because `Application::view` cannot currently construct children
+after layout resolves the viewport. Resize events update that height after the
+initial explicit value.
+
 ## Deterministic Evidence
 
 The public application harness verifies:
@@ -107,6 +133,22 @@ The public application harness verifies:
   after quit or runner destruction.
 - Producer-policy tests verify retry of the recovered message after capacity
   drains and termination after cooperative cancellation or closed ingress.
+- A fixed-height collection with one million logical rows constructs the same
+  ten row elements and the same retained tree size as a 100-row collection at
+  an eight-cell viewport with two-row overscan.
+- Fixed range arithmetic is tested at a million rows; variable range tests cover
+  cached height lookup and anchor preservation after a measurement changes.
+- Application tests verify resize range recomputation, stable collection focus,
+  selection surviving unmount and reorder by key, variable-height navigation,
+  and deterministic multiline rendering.
+- Criterion targets exercise fixed and variable visible-range lookup separately
+  at 1,000, 100,000, and 1,000,000 logical rows.
+
+One optimized Criterion run on 2026-07-17 measured fixed-height lookup at
+approximately 6.6, 7.0, and 7.0 nanoseconds for those sizes. Variable-height
+binary lookup measured approximately 17, 31, and 37 nanoseconds. These local
+numbers establish algorithm shape for the prototype; they are not portable
+end-to-end application claims.
 
 The widget unit tests independently verify checkbox activation and that a dialog
 owns focus, handles Escape, and replaces lower pointer targets.
@@ -118,6 +160,8 @@ cargo test -p arborui-runtime --all-features
 cargo test -p arborui-test --all-features
 cargo test -p arborui-widgets --all-features
 INSTA_UPDATE=no cargo test -p arborui-example-focus-queue --all-features
+INSTA_UPDATE=no cargo test -p arborui-example-collection-lab --all-features
+cargo bench -p arborui-example-collection-lab --bench visible_ranges -- --noplot
 ```
 
 ## Finding
@@ -165,12 +209,30 @@ signalling, not lossless delivery, producer fairness, or automatic rate control.
 Coalescing and replace-latest remain future opt-in policies for message classes
 where intermediate values are demonstrably obsolete.
 
+The collection slice confirms that clipping is not virtualization: bounded work
+requires the application to avoid constructing off-window elements in the first
+place. Stable model keys preserve logical active and selected state, but a row
+that leaves the window intentionally loses retained `NodeId` identity. Making
+the collection viewport the focus target prevents logical keyboard focus from
+disappearing with such rows.
+
+Fixed-height range discovery needs no framework change. Cached variable heights
+also support logarithmic range lookup, although this prototype's simple prefix
+array makes one changed measurement update a suffix in linear time. That is an
+explicit prototype tradeoff rather than a claimed final data structure.
+
+The main public-API gap is layout-resolved child construction. The experiment
+must know its initial viewport height before `view`, then observe later terminal
+resizes at the root. ArborUI should not promote a generic virtual collection
+until another application demonstrates whether it needs a safe synchronous
+deferred-child seam, a viewport-reporting contract, or only controlled
+application sizing. Wrapped-row measurement remains a related open contract.
+
 ## Limits And Next Evidence
 
 This slice does not complete the production-scale proof. It leaves these
 requirements open:
 
-- Fixed and variable-height visible-range collections
 - Select and table controls driven by application requirements
 - Form validation and broader loading or error recovery
 - A matched Ratatui-plus-application implementation
@@ -179,7 +241,8 @@ requirements open:
 - Integration with a real service, subprocess, or async executor rather than the
   demonstration thread producer
 
-The next application evidence should be a separately measured fixed and
-variable-height visible-range collection prototype. It must define construction,
-stable identity, overscan, measurement, focus, and selection semantics rather
-than inferring virtualization from the current scroll views.
+The next application evidence should compare a matched Ratatui implementation
+and gather application-level latency, allocation, emitted-byte, idle-work, and
+retained-memory measurements before selecting optimization work. Select and
+table requirements can then extend the pilot without treating this local
+collection experiment as a stabilized widget API.

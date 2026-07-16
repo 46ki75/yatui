@@ -1,0 +1,23 @@
+[package]
+name = "arborui-example-collection-lab"
+description = "Visible-range collection experiment built with the public arborui API"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arborui = { workspace = true }
+
+[dev-dependencies]
+arborui-test = { workspace = true }
+criterion = { workspace = true }
+insta = { workspace = true }
+
+[[bench]]
+name = "visible_ranges"
+harness = false
