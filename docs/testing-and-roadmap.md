@@ -405,7 +405,10 @@ order.
 
 ### Milestone 9: Correctness Hardening
 
-Status: planned.
+Status: implemented. Layout conversion uses cumulative absolute coordinates and
+Taffy's edge-difference rounding, the terminal runtime and headless harness
+recover from missed structural invalidation without dropping the triggering
+event, and frame patches expose a validated atomic wide-grapheme contract.
 
 Deliver:
 
