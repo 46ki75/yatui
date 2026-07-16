@@ -372,7 +372,7 @@ impl LayoutTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Align, Dimension, FlexDirection};
+    use crate::{Align, Dimension, FlexDirection, Justify};
 
     #[test]
     fn computes_percentages_rounding_and_constraints() -> Result<(), LayoutError> {
@@ -421,6 +421,150 @@ mod tests {
         tree.compute(root, Size::new(3, 1), |_, _| Size::ZERO)?;
         assert_eq!(tree.layout(growing)?.bounds.width, 2);
         assert_eq!(tree.layout(fixed)?.bounds.width, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn cumulative_rounding_covers_nested_fractional_percentage_parent() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let first = tree.add(LayoutStyle::new().size(Dimension::percent(33), Dimension::cells(1)));
+        let second = tree.add(LayoutStyle::new().size(Dimension::percent(33), Dimension::cells(1)));
+        let third = tree.add(LayoutStyle::new().size(Dimension::percent(34), Dimension::cells(1)));
+        let parent = tree.add_with_children(
+            LayoutStyle::new().size(Dimension::percent(90), Dimension::cells(1)),
+            &[first, second, third],
+        )?;
+        let root = tree.add_with_children(
+            LayoutStyle {
+                justify: Justify::Center,
+                ..LayoutStyle::new().size(Dimension::cells(11), Dimension::cells(1))
+            },
+            &[parent],
+        )?;
+
+        tree.compute(root, Size::new(11, 1), |_, _| Size::ZERO)?;
+
+        let parent = tree.layout(parent)?.bounds;
+        let first = tree.layout(first)?.bounds;
+        let second = tree.layout(second)?.bounds;
+        let third = tree.layout(third)?.bounds;
+        assert_eq!(parent, Rect::new(1, 0, 9, 1));
+        assert_eq!(first.x, parent.x);
+        assert_eq!(first.right(), second.x);
+        assert_eq!(second.right(), third.x);
+        assert_eq!(third.right(), parent.right());
+        Ok(())
+    }
+
+    #[test]
+    fn cumulative_rounding_distributes_equal_flex_without_seams() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let child_style = LayoutStyle::new()
+            .size(Dimension::cells(0), Dimension::cells(1))
+            .flex(1, 1);
+        let first = tree.add(child_style);
+        let second = tree.add(child_style);
+        let third = tree.add(child_style);
+        let root = tree.add_with_children(
+            LayoutStyle::new().size(Dimension::cells(10), Dimension::cells(1)),
+            &[first, second, third],
+        )?;
+
+        tree.compute(root, Size::new(10, 1), |_, _| Size::ZERO)?;
+
+        let root = tree.layout(root)?.bounds;
+        let first = tree.layout(first)?.bounds;
+        let second = tree.layout(second)?.bounds;
+        let third = tree.layout(third)?.bounds;
+        assert_eq!([first.width, second.width, third.width], [3, 4, 3]);
+        assert_eq!(first.x, root.x);
+        assert_eq!(first.right(), second.x);
+        assert_eq!(second.right(), third.x);
+        assert_eq!(third.right(), root.right());
+        Ok(())
+    }
+
+    #[test]
+    fn cumulative_rounding_distributes_vertical_flex_without_seams() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let child_style = LayoutStyle::new()
+            .size(Dimension::cells(1), Dimension::cells(0))
+            .flex(1, 1);
+        let first = tree.add(child_style);
+        let second = tree.add(child_style);
+        let third = tree.add(child_style);
+        let root = tree.add_with_children(
+            LayoutStyle {
+                direction: FlexDirection::Column,
+                ..LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(10))
+            },
+            &[first, second, third],
+        )?;
+
+        tree.compute(root, Size::new(1, 10), |_, _| Size::ZERO)?;
+
+        let root = tree.layout(root)?.bounds;
+        let first = tree.layout(first)?.bounds;
+        let second = tree.layout(second)?.bounds;
+        let third = tree.layout(third)?.bounds;
+        assert_eq!([first.height, second.height, third.height], [3, 4, 3]);
+        assert_eq!(first.y, root.y);
+        assert_eq!(first.bottom(), second.y);
+        assert_eq!(second.bottom(), third.y);
+        assert_eq!(third.bottom(), root.bottom());
+        Ok(())
+    }
+
+    #[test]
+    fn cumulative_rounding_preserves_space_between_gap() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let child_style = LayoutStyle::new().size(Dimension::cells(3), Dimension::cells(1));
+        let first = tree.add(child_style);
+        let second = tree.add(child_style);
+        let root = tree.add_with_children(
+            LayoutStyle {
+                justify: Justify::SpaceBetween,
+                ..LayoutStyle::new().size(Dimension::cells(11), Dimension::cells(1))
+            },
+            &[first, second],
+        )?;
+
+        tree.compute(root, Size::new(11, 1), |_, _| Size::ZERO)?;
+
+        let root = tree.layout(root)?.bounds;
+        let first = tree.layout(first)?.bounds;
+        let second = tree.layout(second)?.bounds;
+        assert_eq!(first.x, root.x);
+        assert_eq!(second.right(), root.right());
+        assert_eq!(second.x - first.right(), 5);
+        Ok(())
+    }
+
+    #[test]
+    fn cumulative_rounding_centers_overflow_without_seams() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let child_style = LayoutStyle::new()
+            .size(Dimension::cells(1), Dimension::cells(1))
+            .flex(0, 0);
+        let first = tree.add(child_style);
+        let second = tree.add(child_style);
+        let third = tree.add(child_style);
+        let root = tree.add_with_children(
+            LayoutStyle {
+                justify: Justify::Center,
+                ..LayoutStyle::new().size(Dimension::cells(2), Dimension::cells(1))
+            },
+            &[first, second, third],
+        )?;
+
+        tree.compute(root, Size::new(2, 1), |_, _| Size::ZERO)?;
+
+        let first = tree.layout(first)?.bounds;
+        let second = tree.layout(second)?.bounds;
+        let third = tree.layout(third)?.bounds;
+        assert_eq!([first.x, second.x, third.x], [0, 1, 2]);
+        assert_eq!(first.right(), second.x);
+        assert_eq!(second.right(), third.x);
         Ok(())
     }
 

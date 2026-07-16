@@ -28,6 +28,7 @@ where
     F: FnMut(LayoutNodeId, MeasureInput) -> Size,
 {
     let mut tree = TaffyTree::with_capacity(styles.len());
+    tree.enable_rounding();
     let mut backend_ids = vec![None; styles.len()];
     build_node(&mut tree, styles, root, &mut backend_ids)?;
     let backend_root = backend_ids[root.index()].ok_or(LayoutError::UnknownNode(root))?;
@@ -60,14 +61,7 @@ where
     .map_err(engine_error)?;
 
     let mut layouts = vec![None; styles.len()];
-    collect_layouts(
-        &tree,
-        styles,
-        &backend_ids,
-        root,
-        Point::ORIGIN,
-        &mut layouts,
-    )?;
+    collect_layouts(&tree, styles, &backend_ids, root, (0.0, 0.0), &mut layouts)?;
     Ok(EngineResult { layouts })
 }
 
@@ -103,16 +97,25 @@ fn collect_layouts(
     nodes: &[(LayoutStyle, Vec<LayoutNodeId>)],
     backend_ids: &[Option<taffy::NodeId>],
     node: LayoutNodeId,
-    parent_origin: Point,
+    parent_origin: (f32, f32),
     output: &mut [Option<ComputedLayout>],
 ) -> Result<(), LayoutError> {
     let backend = backend_ids[node.index()].ok_or(LayoutError::UnknownNode(node))?;
     let layout = tree.layout(backend).map_err(engine_error)?;
-    let origin =
-        parent_origin.translated(round_i32(layout.location.x), round_i32(layout.location.y));
+    let unrounded_layout = tree.unrounded_layout(backend);
+    // Taffy's rounded sizes are cumulative edge differences; accumulate its
+    // parent-relative source locations before producing root coordinates.
+    let unrounded_origin = (
+        parent_origin.0 + unrounded_layout.location.x,
+        parent_origin.1 + unrounded_layout.location.y,
+    );
+    let origin = Point::new(round_i32(unrounded_origin.0), round_i32(unrounded_origin.1));
     let bounds = Rect::from_origin_size(
         origin,
-        Size::new(round_u16(layout.size.width), round_u16(layout.size.height)),
+        Size::new(
+            integer_u16(layout.size.width),
+            integer_u16(layout.size.height),
+        ),
     );
     let border = insets(layout.border);
     let padding = insets(layout.padding);
@@ -130,7 +133,7 @@ fn collect_layouts(
     });
 
     for child in &nodes[node.index()].1 {
-        collect_layouts(tree, nodes, backend_ids, *child, origin, output)?;
+        collect_layouts(tree, nodes, backend_ids, *child, unrounded_origin, output)?;
     }
     Ok(())
 }
@@ -204,10 +207,10 @@ fn taffy_insets(value: Insets) -> TaffyRect<LengthPercentage> {
 
 fn insets(value: TaffyRect<f32>) -> Insets {
     Insets::new(
-        round_u16(value.top),
-        round_u16(value.right),
-        round_u16(value.bottom),
-        round_u16(value.left),
+        integer_u16(value.top),
+        integer_u16(value.right),
+        integer_u16(value.bottom),
+        integer_u16(value.left),
     )
 }
 
@@ -231,8 +234,14 @@ fn round_u16(value: f32) -> u16 {
     value.round().clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
+fn integer_u16(value: f32) -> u16 {
+    value.clamp(0.0, f32::from(u16::MAX)) as u16
+}
+
 fn round_i32(value: f32) -> i32 {
-    value.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
+    (value + 0.5)
+        .floor()
+        .clamp(i32::MIN as f32, i32::MAX as f32) as i32
 }
 
 #[cfg(test)]
