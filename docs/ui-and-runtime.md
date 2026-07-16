@@ -284,6 +284,24 @@ messages in command batches preserve declaration order; future outputs are
 delivered when they complete. Quitting cancels unfinished command futures when
 the runner is dropped.
 
+Explicit invalidation is a performance contract rather than a process-safety
+boundary. If an application changes view structure without requesting
+`Recompose`, the terminal runtime detects the mismatch at the next event. It
+retains that event, requests recomposition, and dispatches the event exactly once
+only after the matching UI tree, renderer, and hit map commit. Deferred writes
+continue to defer dispatch, and uncertain writes force a full repaint before
+dispatch. This recovery costs an extra view build and frame, so applications
+should still request the correct invalidation during `update`.
+
+Only `ViewDoesNotMatchCommittedTree` receives this orchestration-level recovery.
+Duplicate sibling keys and use of the wrong committed renderer remain errors,
+and direct lower-level dispatch retains its fallible contract for diagnosing
+misuse. `arborui-test` follows the same ordering and returns a dispatch report
+only after the retained event has actually been routed. Its fallible event API
+surfaces a recovery write failure while retaining the event; callers resume by
+retrying the same `UiEvent`. A different event is rejected with
+`TestError::RecoveryEventMismatch` so input cannot be reordered or dropped.
+
 ## Async Runtime Independence
 
 The core runtime may poll self-waking futures that do not require a particular

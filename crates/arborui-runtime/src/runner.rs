@@ -501,7 +501,7 @@ impl<A: Application> AppRunner<A> {
                 TerminalRenderOutcome::Idle | TerminalRenderOutcome::Applied => {}
             }
             if let Some(event) = self.terminal_events.pop_front() {
-                self.dispatch_terminal_event(event)
+                self.dispatch_terminal_event_with_recovery(event)
                     .map_err(|error| RuntimeError::Ui(UiError::Reconcile(error)))?;
                 continue;
             }
@@ -510,7 +510,7 @@ impl<A: Application> AppRunner<A> {
                     .poll_event(Duration::ZERO)
                     .map_err(RuntimeError::Backend)?
                 {
-                    self.dispatch_terminal_event(event)
+                    self.dispatch_terminal_event_with_recovery(event)
                         .map_err(|error| RuntimeError::Ui(UiError::Reconcile(error)))?;
                 }
                 continue;
@@ -519,7 +519,7 @@ impl<A: Application> AppRunner<A> {
                 .poll_event(self.scheduler.wait_timeout(poll_interval))
                 .map_err(RuntimeError::Backend)?
             {
-                self.dispatch_terminal_event(event)
+                self.dispatch_terminal_event_with_recovery(event)
                     .map_err(|error| RuntimeError::Ui(UiError::Reconcile(error)))?;
             }
         }
@@ -548,6 +548,21 @@ impl<A: Application> AppRunner<A> {
                     break;
                 }
             }
+        }
+    }
+
+    fn dispatch_terminal_event_with_recovery(
+        &mut self,
+        event: TerminalEvent,
+    ) -> Result<(), ReconcileError> {
+        match self.dispatch_terminal_event(event.clone()) {
+            Ok(_) => Ok(()),
+            Err(ReconcileError::ViewDoesNotMatchCommittedTree) => {
+                self.terminal_events.push_front(event);
+                self.invalidation.request(Invalidation::Recompose);
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -596,7 +611,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        convert::Infallible,
         future::Future,
         io,
         pin::Pin,
@@ -608,8 +622,10 @@ mod tests {
     };
 
     use arborui_render::FramePatch;
-    use arborui_terminal::{Capabilities, TerminalBackend};
-    use arborui_ui::Element;
+    use arborui_terminal::{
+        Capabilities, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, TerminalBackend,
+    };
+    use arborui_ui::{Element, EventPhase};
 
     use super::*;
 
@@ -806,10 +822,58 @@ mod tests {
         }
     }
 
+    struct MissedInvalidationApp {
+        expanded: bool,
+        activations: usize,
+        handler_calls: Arc<AtomicUsize>,
+    }
+
+    enum MissedInvalidationMessage {
+        Expand,
+        Activate,
+    }
+
+    impl Application for MissedInvalidationApp {
+        type Message = MissedInvalidationMessage;
+
+        fn update(
+            &mut self,
+            message: Self::Message,
+            _context: &mut UpdateContext<Self::Message>,
+        ) -> Command<Self::Message> {
+            match message {
+                MissedInvalidationMessage::Expand => {
+                    self.expanded = true;
+                    Command::none()
+                }
+                MissedInvalidationMessage::Activate => {
+                    self.activations += 1;
+                    Command::quit()
+                }
+            }
+        }
+
+        fn view(&self) -> Element<'_, Self::Message> {
+            if !self.expanded {
+                return Element::text("collapsed");
+            }
+
+            Element::custom("expanded", [Element::text("expanded")]).on_event(
+                EventPhase::Bubble,
+                |_event, context| {
+                    self.handler_calls.fetch_add(1, Ordering::Relaxed);
+                    context.emit(MissedInvalidationMessage::Activate);
+                },
+            )
+        }
+    }
+
     #[derive(Default)]
     struct BackendState {
         outcomes: VecDeque<WriteOutcome>,
+        events: VecDeque<TerminalEvent>,
         patches: Vec<FramePatch>,
+        fail_next_write: bool,
     }
 
     struct FakeBackend {
@@ -823,7 +887,9 @@ mod tests {
         ) -> (Self, Arc<Mutex<BackendState>>) {
             let state = Arc::new(Mutex::new(BackendState {
                 outcomes: outcomes.into_iter().collect(),
+                events: VecDeque::new(),
                 patches: Vec::new(),
+                fail_next_write: false,
             }));
             (
                 Self {
@@ -836,7 +902,7 @@ mod tests {
     }
 
     impl TerminalBackend for FakeBackend {
-        type Error = Infallible;
+        type Error = io::Error;
 
         fn size(&self) -> Result<Size, Self::Error> {
             Ok(Size::new(8, 2))
@@ -847,7 +913,8 @@ mod tests {
         }
 
         fn poll_event(&mut self, _timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
-            Ok(None)
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            Ok(state.events.pop_front())
         }
 
         fn apply_state(&mut self, _desired: &TerminalState) -> Result<(), Self::Error> {
@@ -857,6 +924,9 @@ mod tests {
         fn write_patch(&mut self, patch: &FramePatch) -> Result<WriteOutcome, Self::Error> {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.patches.push(patch.clone());
+            if std::mem::take(&mut state.fail_next_write) {
+                return Err(io::Error::other("injected write failure"));
+            }
             Ok(state.outcomes.pop_front().unwrap_or(WriteOutcome::Applied))
         }
 
@@ -943,7 +1013,7 @@ mod tests {
 
     fn session(
         outcomes: impl IntoIterator<Item = WriteOutcome>,
-    ) -> Result<(TerminalSession<FakeBackend>, Arc<Mutex<BackendState>>), Infallible> {
+    ) -> Result<(TerminalSession<FakeBackend>, Arc<Mutex<BackendState>>), io::Error> {
         let (backend, state) = FakeBackend::new(outcomes);
         Ok((
             TerminalSession::open(backend, TerminalState::default())?,
@@ -1140,6 +1210,59 @@ mod tests {
         let state = state.lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(state.patches.len(), 3);
         assert!(state.patches.iter().all(|patch| patch.full_repaint));
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_runtime_recomposes_before_retrying_a_mismatched_event()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut terminal, state) = session([])?;
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let app = MissedInvalidationApp {
+            expanded: false,
+            activations: 0,
+            handler_calls: Arc::clone(&handler_calls),
+        };
+        let mut runner = AppRunner::from_terminal(app, &terminal)?;
+        assert_eq!(
+            runner.render_terminal(&mut terminal)?,
+            TerminalRenderOutcome::Applied
+        );
+
+        runner.enqueue(MissedInvalidationMessage::Expand);
+        assert_eq!(runner.process_pending().updates, 1);
+        assert_eq!(runner.pending_invalidation(), Invalidation::None);
+        assert_eq!(
+            runner.dispatch_ui_event(UiEvent::TerminalFocusGained),
+            Err(ReconcileError::ViewDoesNotMatchCommittedTree)
+        );
+        {
+            let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+            state.fail_next_write = true;
+            state
+                .outcomes
+                .extend([WriteOutcome::Deferred, WriteOutcome::Applied]);
+            state.events.push_back(TerminalEvent::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::default(),
+            }));
+        }
+
+        assert!(matches!(
+            runner.run_terminal(&mut terminal, Duration::ZERO),
+            Err(RuntimeError::Backend(_))
+        ));
+        assert_eq!(handler_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(runner.application().activations, 0);
+
+        runner.run_terminal(&mut terminal, Duration::ZERO)?;
+
+        assert_eq!(handler_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(runner.application().activations, 1);
+        let state = state.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(state.patches.len(), 4);
         Ok(())
     }
 

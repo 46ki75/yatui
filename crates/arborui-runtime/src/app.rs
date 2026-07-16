@@ -9,11 +9,14 @@ pub trait Application {
 
     /// Applies one message and describes any resulting effects.
     ///
-    /// Visible model changes must call [`UpdateContext::invalidate`]. Without
-    /// invalidation the runtime does not rebuild [`Self::view`], and changing
-    /// view structure can make subsequent event reconciliation fail. Request
+    /// Visible model changes must call [`UpdateContext::invalidate`]. Request
     /// [`Invalidation::Paint`] for visual-only changes, [`Invalidation::Layout`]
     /// for geometry changes, or [`Invalidation::Recompose`] for structural changes.
+    ///
+    /// The terminal runtime recovers from an accidentally missed structural
+    /// invalidation when the next event detects it, but recovery requires an
+    /// extra recomposition before that event can be dispatched. Explicit
+    /// invalidation remains part of the application performance contract.
     fn update(
         &mut self,
         message: Self::Message,

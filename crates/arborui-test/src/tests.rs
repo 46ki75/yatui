@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use arborui_core::Size;
 use arborui_runtime::{Application, Command, UpdateContext};
-use arborui_ui::{Element, Invalidation};
+use arborui_ui::{
+    Element, EventPhase, Invalidation, KeyModifiers as UiKeyModifiers, PointerEvent,
+    PointerEventKind, ReconcileError,
+};
 
 use super::*;
 
@@ -77,6 +80,72 @@ mod arborui_widgets_for_test {
             direction: arborui_layout::FlexDirection::Column,
             ..arborui_layout::LayoutStyle::default()
         })
+    }
+}
+
+struct MissedInvalidationApp {
+    expanded: bool,
+    activations: usize,
+}
+
+enum MissedInvalidationMessage {
+    Expand,
+    Activate,
+}
+
+impl Application for MissedInvalidationApp {
+    type Message = MissedInvalidationMessage;
+
+    fn update(
+        &mut self,
+        message: Self::Message,
+        _context: &mut UpdateContext<Self::Message>,
+    ) -> Command<Self::Message> {
+        match message {
+            MissedInvalidationMessage::Expand => self.expanded = true,
+            MissedInvalidationMessage::Activate => self.activations += 1,
+        }
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        if !self.expanded {
+            return Element::text("old");
+        }
+
+        Element::custom("expanded", [Element::text("new")]).on_event(
+            EventPhase::Bubble,
+            |_event, context| {
+                context.emit(MissedInvalidationMessage::Activate);
+            },
+        )
+    }
+}
+
+struct DuplicateKeyApp {
+    invalid: bool,
+}
+
+impl Application for DuplicateKeyApp {
+    type Message = ();
+
+    fn update(
+        &mut self,
+        _message: Self::Message,
+        _context: &mut UpdateContext<Self::Message>,
+    ) -> Command<Self::Message> {
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        if self.invalid {
+            Element::container([
+                Element::text("one").key("duplicate"),
+                Element::text("two").key("duplicate"),
+            ])
+        } else {
+            Element::text("valid")
+        }
     }
 }
 
@@ -155,6 +224,163 @@ fn output_errors_preserve_frame_and_recover_with_a_full_repaint() {
         app.last_frame_patch()
             .is_some_and(|patch| patch.full_repaint)
     );
+}
+
+#[test]
+fn missed_invalidation_recovery_commits_before_exactly_once_dispatch() {
+    let mut app = TestApp::new(
+        MissedInvalidationApp {
+            expanded: false,
+            activations: 0,
+        },
+        Size::new(3, 1),
+    );
+    app.send(MissedInvalidationMessage::Expand);
+    app.defer_next_output();
+
+    let (dispatch, settle) = app.event(UiEvent::Pointer(PointerEvent {
+        kind: PointerEventKind::Moved,
+        position: Point::ORIGIN,
+        modifiers: UiKeyModifiers::NONE,
+    }));
+
+    assert_eq!(dispatch.messages, 1);
+    assert_eq!(app.application().activations, 1);
+    assert_eq!(app.frame().characters(), "new");
+    assert_eq!(settle.outcome, SettleOutcome::Settled);
+    assert_eq!(settle.committed_frames, 1);
+    assert_eq!(app.frame_patches().len(), 3);
+}
+
+#[test]
+fn missed_invalidation_recovery_retains_event_after_output_error() {
+    let mut app = TestApp::new(
+        MissedInvalidationApp {
+            expanded: false,
+            activations: 0,
+        },
+        Size::new(3, 1),
+    );
+    app.send(MissedInvalidationMessage::Expand);
+    app.fail_next_output();
+    let event = UiEvent::Pointer(PointerEvent {
+        kind: PointerEventKind::Moved,
+        position: Point::ORIGIN,
+        modifiers: UiKeyModifiers::NONE,
+    });
+
+    let error = app.try_event(event.clone());
+
+    assert!(matches!(error, Err(TestError::Backend(TestBackendError))));
+    assert_eq!(app.application().activations, 0);
+    assert_eq!(app.frame().characters(), "old");
+
+    let recovery = app.settle();
+    assert_eq!(recovery.committed_frames, 1);
+    assert_eq!(app.application().activations, 0);
+    assert_eq!(app.frame().characters(), "new");
+
+    let retry = app.try_event(event);
+    let (dispatch, settle) = match retry {
+        Ok(reports) => reports,
+        Err(error) => panic!("event recovery failed: {error}"),
+    };
+
+    assert_eq!(dispatch.messages, 1);
+    assert_eq!(app.application().activations, 1);
+    assert_eq!(app.frame().characters(), "new");
+    assert_eq!(settle.outcome, SettleOutcome::Settled);
+    assert_eq!(settle.turns, 3);
+    assert_eq!(settle.updates, 1);
+    assert_eq!(settle.committed_frames, 0);
+}
+
+#[test]
+fn missed_invalidation_recovery_rejects_a_different_event() {
+    let mut app = TestApp::new(
+        MissedInvalidationApp {
+            expanded: false,
+            activations: 0,
+        },
+        Size::new(3, 1),
+    );
+    app.send(MissedInvalidationMessage::Expand);
+    app.fail_next_output();
+    let pending = UiEvent::Pointer(PointerEvent {
+        kind: PointerEventKind::Moved,
+        position: Point::ORIGIN,
+        modifiers: UiKeyModifiers::NONE,
+    });
+    assert!(matches!(
+        app.try_event(pending.clone()),
+        Err(TestError::Backend(TestBackendError))
+    ));
+
+    let different = app.try_event(UiEvent::TerminalFocusGained);
+
+    assert!(matches!(
+        different,
+        Err(TestError::RecoveryEventMismatch {
+            pending: retained,
+            received: UiEvent::TerminalFocusGained,
+        }) if retained == pending
+    ));
+    assert_eq!(app.application().activations, 0);
+
+    let retry = app.try_event(pending);
+    assert!(retry.is_ok());
+    assert_eq!(app.application().activations, 1);
+    assert_eq!(app.frame().characters(), "new");
+}
+
+#[test]
+fn retained_event_recomposes_again_when_view_changes_before_retry() {
+    let mut app = TestApp::new(
+        MissedInvalidationApp {
+            expanded: false,
+            activations: 0,
+        },
+        Size::new(3, 1),
+    );
+    app.send(MissedInvalidationMessage::Expand);
+    app.fail_next_output();
+    let event = UiEvent::Pointer(PointerEvent {
+        kind: PointerEventKind::Moved,
+        position: Point::ORIGIN,
+        modifiers: UiKeyModifiers::NONE,
+    });
+    assert!(matches!(
+        app.try_event(event.clone()),
+        Err(TestError::Backend(TestBackendError))
+    ));
+    assert_eq!(app.settle().committed_frames, 1);
+    app.application_mut().expanded = false;
+
+    let retry = app.try_event(event);
+    let (dispatch, settle) = match retry {
+        Ok(reports) => reports,
+        Err(error) => panic!("event recovery failed: {error}"),
+    };
+
+    assert_eq!(dispatch.messages, 0);
+    assert_eq!(app.application().activations, 0);
+    assert_eq!(app.frame().characters(), "old");
+    assert_eq!(settle.committed_frames, 1);
+}
+
+#[test]
+fn missed_invalidation_recovery_does_not_swallow_duplicate_keys() {
+    let mut app = TestApp::new(DuplicateKeyApp { invalid: false }, Size::new(5, 1));
+    app.application_mut().invalid = true;
+
+    let error = app.try_event(UiEvent::TerminalFocusGained);
+
+    assert!(matches!(
+        error,
+        Err(TestError::Reconcile(ReconcileError::DuplicateSiblingKey(
+            Key::String(key)
+        ))) if key.as_ref() == "duplicate"
+    ));
 }
 
 #[test]

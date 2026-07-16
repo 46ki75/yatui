@@ -4,6 +4,7 @@ use arborui_core::{Point, Size};
 use arborui_render::{FramePatch, Renderer};
 use arborui_runtime::{
     AppRunner, Application, DispatchReport, EventProxy, RuntimeError, TerminalRenderOutcome,
+    translate_terminal_event,
 };
 use arborui_terminal::{
     Capabilities, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
@@ -66,6 +67,13 @@ pub enum TestError {
     },
     /// Event dispatch could not reconcile the current view.
     Reconcile(ReconcileError),
+    /// A different event was submitted while recovery retained an event.
+    RecoveryEventMismatch {
+        /// Event retained for dispatch after the recovery frame commits.
+        pending: UiEvent,
+        /// Event rejected to preserve input ordering.
+        received: UiEvent,
+    },
     /// Manual time exceeded [`Duration::MAX`].
     TimeOverflow,
     /// Immediate work did not settle within the safety limit.
@@ -89,6 +97,10 @@ impl fmt::Display for TestError {
                 "{error}; terminal restoration also failed: {restore_error}"
             ),
             Self::Reconcile(error) => error.fmt(formatter),
+            Self::RecoveryEventMismatch { pending, received } => write!(
+                formatter,
+                "cannot dispatch {received:?} while recovery is pending for {pending:?}; retry the pending event first"
+            ),
             Self::TimeOverflow => formatter.write_str("manual test clock overflowed"),
             Self::SettleLimit { turns } => {
                 write!(formatter, "application did not settle within {turns} turns")
@@ -105,7 +117,9 @@ impl Error for TestError {
             Self::Commit(error) => Some(error),
             Self::Restore { error, .. } => Some(error.as_ref()),
             Self::Reconcile(error) => Some(error),
-            Self::TimeOverflow | Self::SettleLimit { .. } => None,
+            Self::RecoveryEventMismatch { .. } | Self::TimeOverflow | Self::SettleLimit { .. } => {
+                None
+            }
         }
     }
 }
@@ -138,6 +152,13 @@ pub struct TestApp<A: Application> {
     runner: AppRunner<A>,
     terminal: TerminalSession<MemoryBackend>,
     clock: ManualClock,
+    pending_recovery: Option<PendingRecovery>,
+}
+
+struct PendingRecovery {
+    event: UiEvent,
+    turns: usize,
+    committed_frames: usize,
 }
 
 impl<A: Application> TestApp<A> {
@@ -191,6 +212,7 @@ impl<A: Application> TestApp<A> {
             runner,
             terminal,
             clock,
+            pending_recovery: None,
         };
         app.try_settle()?;
         Ok(app)
@@ -242,16 +264,90 @@ impl<A: Application> TestApp<A> {
     }
 
     /// Fallible variant of [`event`](Self::event).
+    ///
+    /// A structural mismatch triggers a matching frame commit before retrying
+    /// the event. Backend failures leave that event pending: retry the same event
+    /// to resume recovery. A different event returns
+    /// [`TestError::RecoveryEventMismatch`] without being dispatched. The
+    /// returned dispatch report always describes actual routing.
     pub fn try_event(
         &mut self,
         event: UiEvent,
     ) -> Result<(DispatchReport, SettleReport), TestError> {
+        if let Some(pending) = &self.pending_recovery {
+            if pending.event != event {
+                return Err(TestError::RecoveryEventMismatch {
+                    pending: pending.event.clone(),
+                    received: event,
+                });
+            }
+            return self.try_recover_event();
+        }
+
         if let UiEvent::Resize(size) = &event {
             self.terminal.backend_mut().set_size(*size);
         }
-        let dispatch = self.runner.dispatch_ui_event(event)?;
-        let settle = self.try_settle()?;
-        Ok((dispatch, settle))
+        match self.runner.dispatch_ui_event(event.clone()) {
+            Ok(dispatch) => Ok((dispatch, self.try_settle()?)),
+            Err(ReconcileError::ViewDoesNotMatchCommittedTree) => {
+                self.runner.invalidate(arborui_ui::Invalidation::Recompose);
+                self.pending_recovery = Some(PendingRecovery {
+                    event,
+                    turns: 0,
+                    committed_frames: 0,
+                });
+                self.try_recover_event()
+            }
+            Err(error) => Err(TestError::Reconcile(error)),
+        }
+    }
+
+    fn try_recover_event(&mut self) -> Result<(DispatchReport, SettleReport), TestError> {
+        let Some(mut pending) = self.pending_recovery.take() else {
+            unreachable!("event recovery requires a pending event");
+        };
+
+        while pending.turns < MAX_SETTLE_TURNS {
+            pending.turns = pending.turns.saturating_add(1);
+            let outcome = match self.runner.render_terminal(&mut self.terminal) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.pending_recovery = Some(pending);
+                    return Err(TestError::from(error));
+                }
+            };
+            match outcome {
+                TerminalRenderOutcome::Applied => {
+                    self.terminal.backend_mut().sync_committed_size();
+                    pending.committed_frames = pending.committed_frames.saturating_add(1);
+                }
+                // A caller may have settled the recovery frame after an output
+                // error before retrying the retained event.
+                TerminalRenderOutcome::Idle => {}
+                TerminalRenderOutcome::Deferred | TerminalRenderOutcome::StateUnknown => continue,
+            };
+            let dispatch = match self.runner.dispatch_ui_event(pending.event.clone()) {
+                Ok(dispatch) => dispatch,
+                Err(ReconcileError::ViewDoesNotMatchCommittedTree) => {
+                    self.runner.invalidate(arborui_ui::Invalidation::Recompose);
+                    continue;
+                }
+                Err(error) => {
+                    self.pending_recovery = Some(pending);
+                    return Err(TestError::Reconcile(error));
+                }
+            };
+            let mut settle = self.try_settle()?;
+            settle.turns = pending.turns.saturating_add(settle.turns);
+            settle.committed_frames = pending
+                .committed_frames
+                .saturating_add(settle.committed_frames);
+            return Ok((dispatch, settle));
+        }
+
+        let turns = pending.turns;
+        self.pending_recovery = Some(pending);
+        Err(TestError::SettleLimit { turns })
     }
 
     /// Dispatches one normalized terminal event and settles immediate work.
@@ -261,11 +357,10 @@ impl<A: Application> TestApp<A> {
 
     /// Fallible variant of [`terminal_event`](Self::terminal_event).
     pub fn try_terminal_event(&mut self, event: TerminalEvent) -> Result<SettleReport, TestError> {
-        if let TerminalEvent::Resize(size) = &event {
-            self.terminal.backend_mut().set_size(*size);
+        match translate_terminal_event(event) {
+            Some(event) => self.try_event(event).map(|(_, settle)| settle),
+            None => self.try_settle(),
         }
-        self.runner.dispatch_terminal_event(event)?;
-        self.try_settle()
     }
 
     /// Presses one unmodified key and settles immediate work.
