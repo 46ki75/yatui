@@ -1,8 +1,8 @@
 # Collection Lab Ratatui Comparison
 
-This package contains the matched Ratatui implementation for ArborUI's
-Collection Lab experiment. It is excluded from the product workspace so Ratatui
-does not become part of ArborUI's facade-only example dependency graph.
+This package contains matched Ratatui implementations for ArborUI's Collection
+Lab list and table experiments. It is excluded from the product workspace so
+Ratatui does not become part of ArborUI's facade-only example dependency graph.
 
 ## Comparison Contract
 
@@ -10,6 +10,12 @@ Both implementations use the same application-owned visible-range providers,
 generated labels, stable `u64` item keys, row measurements, overscan, viewport
 dimensions, and action traces. The primary implementation constructs only the
 visible and overscanned rows before painting.
+
+The table workload additionally shares its complete model, responsive column
+widths, Unicode records, selection policy, and deterministic producer updates.
+ArborUI composes facade-only rows and controlled scrolling; Ratatui renders the
+same window through its stateful `Table`. This is an application-level prototype,
+not a stabilized ArborUI table widget.
 
 The deterministic contract covers:
 
@@ -19,6 +25,9 @@ The deterministic contract covers:
 - Character-frame equivalence after a canonical variable-height trace
 - Bounded construction for one million logical rows
 - Explicit unchanged redraw as distinct from no requested draw
+- Responsive table columns with Unicode content
+- Visible and offscreen background updates at stable row keys
+- Table character-frame parity through narrow and wide resizes
 
 The timing benchmark measures a complete logical application turn: update,
 visible-row construction, paint, and logical terminal diff. It excludes model
@@ -67,6 +76,11 @@ Core Ultra 7 255H. Values below are Criterion point estimates for one alternatin
 Down or Up message through update, construction, paint, logical diff, and the
 respective test backend.
 
+Table background updates are deterministic messages so the benchmark isolates
+the serialized application and render turn. It does not include producer sleep,
+thread scheduling, or queue latency; Focus Queue separately covers bounded
+external ingress.
+
 | Rows | Mode | ArborUI | Ratatui |
 | ---: | --- | ---: | ---: |
 | 1,000 | Fixed | 30.4 us | 9.72 us |
@@ -110,6 +124,32 @@ Conservative damaged-row repaint subsequently reduced fixed and variable
 selection by 40.4% and 39.2% against the preceding documented point estimates;
 line navigation benefits from the same focus-node damage tracking.
 
+## Table Workload Result
+
+The same 2026-07-17 environment produced these Criterion point estimates for
+the matched table workload. The action cases use 100,000 rows unless shown
+otherwise:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Line navigation, 1,000 rows | 55.2 us | 198 us |
+| Line navigation, 100,000 rows | 54.6 us | 206 us |
+| Line navigation, 1,000,000 rows | 55.4 us | 204 us |
+| Cold initial render, 100,000 rows | 11.8 ms | 12.3 ms |
+| Page Down | 189 us | 204 us |
+| Selection | 55.4 us | 215 us |
+| Resize 48x12 to 48x16 | 279 us | 223 us |
+| Visible background update | 181 us | 190 us |
+| Offscreen background update | 32.5 us | 195 us |
+
+Both line-navigation paths remain flat as logical row count grows. Ratatui's
+stateful table reconstructs and lays out the visible widget rows on every draw;
+ArborUI's retained path is faster for paint-only selection and unchanged visible
+content in this workload. Resize remains faster in Ratatui. A visible producer
+update changes text and therefore requires ArborUI recomposition and layout;
+an offscreen update reconciles to unchanged visible content and reuses the
+committed frame.
+
 The production serializer probe reports `bytes/writer calls/flushes`:
 
 | Scenario | ArborUI fixed | Ratatui fixed | ArborUI variable | Ratatui variable |
@@ -126,6 +166,21 @@ ArborUI's runtime suppresses an empty prepared patch before backend output.
 Ratatui still invokes its production draw path for an empty diff, which emits
 reset commands and flushes. These figures measure deterministic serialization,
 not terminal-driver buffering or transport syscalls.
+
+The corresponding table serializer result is:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Initial render | 5429/3821/1 | 1203/816/1 |
+| Page Down | 1129/815/1 | 294/244/1 |
+| Resize | 7404/5133/1 | 1663/1131/2 |
+| Selection | 370/273/1 | 92/73/1 |
+| Visible background update | 102/68/1 | 65/44/1 |
+| Offscreen background update | 0/0/0 | 19/12/1 |
+
+The offscreen update changes shared application state but no visible row. ArborUI
+therefore submits no patch, while Ratatui's empty production diff still emits
+reset commands and one flush.
 
 ## Allocation And Retained Memory
 
@@ -163,6 +218,23 @@ are constructed before profiling.
 | Reverse | 2,520,281/2,444,860 | 2,400,008/2,400,008 | 2,498,714/2,440,700 | 2,400,008/2,400,008 |
 | Unchanged redraw | 56,648/39,892 | 0/0 | 47,880/35,492 | 0/0 |
 
+The table model retains 152,000 bytes at 1,000 rows, 15,200,000 at 100,000, and
+152,000,000 at one million on both sides. With model construction outside the
+profiled boundary, first-render retained framework memory stays exactly 127,844
+bytes for ArborUI and 82,944 bytes for Ratatui at all three sizes.
+
+At 100,000 rows, table operation cells below are `allocated bytes/retained
+bytes`:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Page Down | 528,522/76,620 | 215,868/0 |
+| Resize | 789,210/153,484 | 380,212/165,888 |
+| Selection | 142,306/71,788 | 219,812/0 |
+| Visible background update | 474,858/70,228 | 209,764/8 |
+| Offscreen background update | 134,048/69,748 | 217,572/8 |
+| Unchanged redraw | 134,040/69,740 | 225,740/0 |
+
 ## ArborUI Phase Attribution
 
 ArborUI exposes opt-in timings for view construction, staged reconciliation,
@@ -188,6 +260,17 @@ below in nanoseconds, while `comparison-phase-metrics` prints every phase.
 | Variable | Selection | 404 | 3,195 | 0 | 18,704 | 6,207 | 38,316 |
 | Variable | Reverse | 812,190 | 6,817 | 42,408 | 52,977 | 7,209 | 126,907 |
 | Variable | Unchanged redraw | 347 | 3,232 | 0 | 1,146 | 2,316 | 15,545 |
+
+The table phase report adds:
+
+| Scenario | Update | Stage/reconcile | Layout | Paint | Diff | Render total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Initial render | 0 | 25,669 | 127,876 | 62,387 | 13,855 | 262,082 |
+| Page Down | 510 | 13,034 | 91,617 | 51,931 | 6,438 | 183,584 |
+| Resize | 6,181 | 13,546 | 106,045 | 69,807 | 15,976 | 230,636 |
+| Selection | 316 | 10,358 | 0 | 14,768 | 4,125 | 48,446 |
+| Visible update | 580 | 11,389 | 81,373 | 50,918 | 2,830 | 165,987 |
+| Offscreen update | 403 | 11,240 | 0 | 1,365 | 2,145 | 34,773 |
 
 Ordinary preparation skips layout when reconciliation reports only paint or no
 changes. Paint-only work against the exact committed renderer generation clones

@@ -1,7 +1,37 @@
 //! Application evidence through the public ArborUI facades.
 
-use arborui_example_collection_lab::{CollectionLab, CollectionMode, Message};
+use arborui_example_collection_lab::{
+    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+};
 use arborui_test::{Key, KeyCode, Point, Size, TestApp};
+
+#[test]
+fn table_keeps_selection_through_updates_and_resize() {
+    let mut application = TestApp::new(TableLab::new(100_000, 48, 12), Size::new(48, 12));
+
+    application.send(TableAction::PageDown);
+    application.send(TableAction::Down);
+    application.send(TableAction::SelectActive);
+    application.send(TableAction::BackgroundUpdate {
+        key: 8,
+        revision: 1,
+    });
+    application.send(TableAction::BackgroundUpdate {
+        key: 99_999,
+        revision: 2,
+    });
+    application.resize(Size::new(34, 9));
+
+    assert_eq!(application.application().model().active_key(), Some(8));
+    assert_eq!(application.application().model().selected_key(), Some(8));
+    assert_eq!(application.application().model().generation(), 2);
+    assert_eq!(
+        application.application().model().rows()[8].status(),
+        "updating"
+    );
+    assert_eq!(application.application().constructed_rows(), 8);
+    assert!(application.frame().characters().contains("Krakó"));
+}
 
 #[test]
 fn fixed_construction_and_tree_size_are_independent_of_item_count() {

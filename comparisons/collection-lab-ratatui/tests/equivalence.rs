@@ -1,13 +1,72 @@
 //! Matched semantic and character-frame contracts.
 
-use arborui_example_collection_lab::{CollectionLab, CollectionMode, Message};
+use arborui_example_collection_lab::{
+    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+};
 use arborui_test::{Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, CountingBackend, RatatuiCollectionLab, SemanticState, draw_terminal,
-    draw_test_frame,
+    ComparisonAction, CountingBackend, RatatuiCollectionLab, RatatuiTableLab, SemanticState,
+    TableSemanticState, draw_terminal, draw_test_frame, draw_test_table_frame,
 };
+
+#[test]
+fn canonical_table_trace_matches_semantics_and_characters() {
+    let mut arborui = TestApp::new(TableLab::new(100_000, 48, 12), Size::new(48, 12));
+    let mut ratatui = RatatuiTableLab::new(100_000, 48, 12);
+    let mut terminal = Terminal::new(TestBackend::new(48, 12)).expect("test terminal must open");
+
+    assert_table_frame(&arborui, &mut ratatui, &mut terminal);
+    for action in [
+        TableAction::PageDown,
+        TableAction::Down,
+        TableAction::SelectActive,
+        TableAction::BackgroundUpdate {
+            key: 8,
+            revision: 1,
+        },
+        TableAction::BackgroundUpdate {
+            key: 99_999,
+            revision: 2,
+        },
+        TableAction::Resize {
+            width: 34,
+            height: 9,
+        },
+        TableAction::Resize {
+            width: 64,
+            height: 15,
+        },
+    ] {
+        apply_arborui_table(&mut arborui, action);
+        ratatui.apply(action);
+        if let TableAction::Resize { width, height } = action {
+            terminal.backend_mut().resize(width, height);
+        }
+        assert_table_frame(&arborui, &mut ratatui, &mut terminal);
+    }
+
+    assert_eq!(ratatui.semantic_state().selected_key, Some(8));
+    assert_eq!(ratatui.semantic_state().generation, 2);
+    assert_eq!(ratatui.model().rows()[8].revision(), 1);
+    assert_eq!(ratatui.model().rows()[99_999].revision(), 2);
+}
+
+#[test]
+fn table_construction_is_bounded_and_unicode_is_visible() {
+    let arborui = TestApp::new(TableLab::new(1_000_000, 64, 12), Size::new(64, 12));
+    let mut ratatui = RatatuiTableLab::new(1_000_000, 64, 12);
+    let mut terminal = Terminal::new(TestBackend::new(64, 12)).expect("test terminal must open");
+    let frame =
+        draw_test_table_frame(&mut terminal, &mut ratatui).expect("Ratatui table frame must draw");
+
+    assert_eq!(arborui.application().constructed_rows(), 9);
+    assert_eq!(ratatui.semantic_state().constructed_rows, 9);
+    assert_eq!(arborui_table_state(&arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), frame);
+    assert!(frame.contains("München"));
+}
 
 #[test]
 fn canonical_variable_trace_has_matching_semantics_and_characters() {
@@ -225,4 +284,34 @@ fn apply_arborui(app: &mut TestApp<CollectionLab>, action: ComparisonAction) {
         }
     };
     app.send(message);
+}
+
+fn assert_table_frame(
+    arborui: &TestApp<TableLab>,
+    ratatui: &mut RatatuiTableLab,
+    terminal: &mut Terminal<TestBackend>,
+) {
+    let frame = draw_test_table_frame(terminal, ratatui).expect("Ratatui table frame must draw");
+    assert_eq!(arborui_table_state(arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), frame);
+}
+
+fn arborui_table_state(app: &TestApp<TableLab>) -> TableSemanticState {
+    TableSemanticState {
+        active_key: app.application().model().active_key(),
+        selected_key: app.application().model().selected_key(),
+        scroll_offset: app.application().model().scroll_offset(),
+        viewport_height: app.application().model().viewport_height(),
+        visible_range: app.application().model().visible_range(),
+        constructed_rows: app.application().constructed_rows(),
+        generation: app.application().model().generation(),
+    }
+}
+
+fn apply_arborui_table(app: &mut TestApp<TableLab>, action: TableAction) {
+    if let TableAction::Resize { width, height } = action {
+        app.resize(Size::new(width, height));
+    } else {
+        app.send(action);
+    }
 }

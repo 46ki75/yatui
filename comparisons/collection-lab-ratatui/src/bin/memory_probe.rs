@@ -3,9 +3,12 @@
 use std::{error::Error, hint::black_box};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiTableLab, draw_test_table_terminal,
+    draw_test_terminal,
 };
-use arborui_example_collection_lab::{CollectionLab, CollectionMode, Message};
+use arborui_example_collection_lab::{
+    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+};
 use arborui_test::{Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
 
@@ -23,6 +26,12 @@ enum Framework {
 }
 
 #[derive(Clone, Copy)]
+enum Workload {
+    Collection(CollectionMode),
+    Table,
+}
+
+#[derive(Clone, Copy)]
 enum Scenario {
     Model,
     Cold,
@@ -32,6 +41,8 @@ enum Scenario {
     Selection,
     Reverse,
     UnchangedRedraw,
+    VisibleUpdate,
+    OffscreenUpdate,
 }
 
 struct Metrics {
@@ -47,19 +58,20 @@ struct Metrics {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().collect::<Vec<_>>();
-    let [_, framework, mode, scenario, item_count] = arguments.as_slice() else {
+    let [_, framework, workload, scenario, item_count] = arguments.as_slice() else {
         return Err(
-            "usage: memory_probe <arborui|ratatui> <fixed|variable> <scenario> <items>".into(),
+            "usage: memory_probe <arborui|ratatui> <fixed|variable|table> <scenario> <items>"
+                .into(),
         );
     };
     let framework = parse_framework(framework)?;
-    let mode = parse_mode(mode)?;
+    let workload = parse_workload(workload)?;
     let scenario = parse_scenario(scenario)?;
     let item_count = item_count.parse::<usize>()?;
 
     let metrics = match framework {
-        Framework::Arborui => measure_arborui(mode, scenario, item_count),
-        Framework::Ratatui => measure_ratatui(mode, scenario, item_count),
+        Framework::Arborui => measure_arborui(workload, scenario, item_count),
+        Framework::Ratatui => measure_ratatui(workload, scenario, item_count),
     };
     println!(
         "total_blocks={} total_bytes={} max_blocks={} max_bytes={} curr_blocks={} curr_bytes={} end_blocks={} end_bytes={}",
@@ -75,7 +87,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn measure_arborui(mode: CollectionMode, scenario: Scenario, item_count: usize) -> Metrics {
+fn measure_arborui(workload: Workload, scenario: Scenario, item_count: usize) -> Metrics {
+    match workload {
+        Workload::Collection(mode) => measure_arborui_collection(mode, scenario, item_count),
+        Workload::Table => measure_arborui_table(scenario, item_count),
+    }
+}
+
+fn measure_arborui_collection(
+    mode: CollectionMode,
+    scenario: Scenario,
+    item_count: usize,
+) -> Metrics {
     match scenario {
         Scenario::Model => {
             measure(|| CollectionLab::new(mode, item_count, viewport_height(HEIGHT)))
@@ -130,15 +153,95 @@ fn measure_arborui(mode: CollectionMode, scenario: Scenario, item_count: usize) 
                     Scenario::Model | Scenario::Cold | Scenario::InitialRender => {
                         unreachable!("setup scenarios are handled separately")
                     }
+                    Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
+                        unreachable!("table scenarios are handled separately")
+                    }
                 }
                 assert_bounded(application.application().constructed_rows());
                 black_box(application)
             })
         }
+        Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
+            panic!("background updates are table scenarios")
+        }
     }
 }
 
-fn measure_ratatui(mode: CollectionMode, scenario: Scenario, item_count: usize) -> Metrics {
+fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
+    match scenario {
+        Scenario::Model => measure(|| TableLab::new(item_count, WIDTH, HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let application = TestApp::new(TableLab::new(item_count, WIDTH, HEIGHT), base_size());
+            assert_bounded(application.application().constructed_rows());
+            application
+        }),
+        Scenario::InitialRender => {
+            let model = TableLab::new(item_count, WIDTH, HEIGHT);
+            measure(move || {
+                let application = TestApp::new(model, base_size());
+                assert_bounded(application.application().constructed_rows());
+                application
+            })
+        }
+        Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::UnchangedRedraw
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate => {
+            let mut application =
+                TestApp::new(TableLab::new(item_count, WIDTH, HEIGHT), base_size());
+            measure(move || {
+                match scenario {
+                    Scenario::PageDown => {
+                        application.send(TableAction::PageDown);
+                    }
+                    Scenario::Resize => {
+                        application.resize(Size::new(WIDTH, RESIZED_HEIGHT));
+                    }
+                    Scenario::Selection => {
+                        application.send(TableAction::SelectActive);
+                    }
+                    Scenario::UnchangedRedraw => {
+                        application.send(TableAction::Home);
+                    }
+                    Scenario::VisibleUpdate => {
+                        application.send(TableAction::BackgroundUpdate {
+                            key: 0,
+                            revision: 1,
+                        });
+                    }
+                    Scenario::OffscreenUpdate => {
+                        application.send(TableAction::BackgroundUpdate {
+                            key: u64::try_from(item_count.saturating_sub(1)).unwrap_or(u64::MAX),
+                            revision: 1,
+                        });
+                    }
+                    Scenario::Model
+                    | Scenario::Cold
+                    | Scenario::InitialRender
+                    | Scenario::Reverse => unreachable!("scenario is handled separately"),
+                }
+                assert_bounded(application.application().constructed_rows());
+                black_box(application)
+            })
+        }
+        Scenario::Reverse => panic!("reverse is not a table scenario"),
+    }
+}
+
+fn measure_ratatui(workload: Workload, scenario: Scenario, item_count: usize) -> Metrics {
+    match workload {
+        Workload::Collection(mode) => measure_ratatui_collection(mode, scenario, item_count),
+        Workload::Table => measure_ratatui_table(scenario, item_count),
+    }
+}
+
+fn measure_ratatui_collection(
+    mode: CollectionMode,
+    scenario: Scenario,
+    item_count: usize,
+) -> Metrics {
     match scenario {
         Scenario::Model => measure(|| RatatuiCollectionLab::new(mode, item_count, WIDTH, HEIGHT)),
         Scenario::Cold => measure(|| {
@@ -193,12 +296,89 @@ fn measure_ratatui(mode: CollectionMode, scenario: Scenario, item_count: usize) 
                     Scenario::Model | Scenario::Cold | Scenario::InitialRender => {
                         unreachable!("setup scenarios are handled separately")
                     }
+                    Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
+                        unreachable!("table scenarios are handled separately")
+                    }
                 }
                 draw_test_terminal(&mut terminal, &mut application).expect("frame must draw");
                 assert_bounded(application.semantic_state().constructed_rows);
                 black_box((application, terminal))
             })
         }
+        Scenario::VisibleUpdate | Scenario::OffscreenUpdate => {
+            panic!("background updates are table scenarios")
+        }
+    }
+}
+
+fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
+    match scenario {
+        Scenario::Model => measure(|| RatatuiTableLab::new(item_count, WIDTH, HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let mut application = RatatuiTableLab::new(item_count, WIDTH, HEIGHT);
+            let mut terminal =
+                Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+            draw_test_table_terminal(&mut terminal, &mut application)
+                .expect("initial table frame must draw");
+            assert_bounded(application.semantic_state().constructed_rows);
+            (application, terminal)
+        }),
+        Scenario::InitialRender => {
+            let mut application = RatatuiTableLab::new(item_count, WIDTH, HEIGHT);
+            measure(move || {
+                let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT))
+                    .expect("test terminal must open");
+                draw_test_table_terminal(&mut terminal, &mut application)
+                    .expect("initial table frame must draw");
+                assert_bounded(application.semantic_state().constructed_rows);
+                (application, terminal)
+            })
+        }
+        Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::UnchangedRedraw
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate => {
+            let mut application = RatatuiTableLab::new(item_count, WIDTH, HEIGHT);
+            let mut terminal =
+                Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+            draw_test_table_terminal(&mut terminal, &mut application)
+                .expect("initial table frame must draw");
+            measure(move || {
+                match scenario {
+                    Scenario::PageDown => application.apply(TableAction::PageDown),
+                    Scenario::Resize => {
+                        terminal.backend_mut().resize(WIDTH, RESIZED_HEIGHT);
+                        application.apply(TableAction::Resize {
+                            width: WIDTH,
+                            height: RESIZED_HEIGHT,
+                        });
+                    }
+                    Scenario::Selection => application.apply(TableAction::SelectActive),
+                    Scenario::UnchangedRedraw => application.apply(TableAction::Home),
+                    Scenario::VisibleUpdate => application.apply(TableAction::BackgroundUpdate {
+                        key: 0,
+                        revision: 1,
+                    }),
+                    Scenario::OffscreenUpdate => {
+                        application.apply(TableAction::BackgroundUpdate {
+                            key: u64::try_from(item_count.saturating_sub(1)).unwrap_or(u64::MAX),
+                            revision: 1,
+                        });
+                    }
+                    Scenario::Model
+                    | Scenario::Cold
+                    | Scenario::InitialRender
+                    | Scenario::Reverse => unreachable!("scenario is handled separately"),
+                }
+                draw_test_table_terminal(&mut terminal, &mut application)
+                    .expect("table frame must draw");
+                assert_bounded(application.semantic_state().constructed_rows);
+                black_box((application, terminal))
+            })
+        }
+        Scenario::Reverse => panic!("reverse is not a table scenario"),
     }
 }
 
@@ -248,11 +428,12 @@ fn parse_framework(value: &str) -> Result<Framework, Box<dyn Error>> {
     }
 }
 
-fn parse_mode(value: &str) -> Result<CollectionMode, Box<dyn Error>> {
+fn parse_workload(value: &str) -> Result<Workload, Box<dyn Error>> {
     match value {
-        "fixed" => Ok(CollectionMode::Fixed),
-        "variable" => Ok(CollectionMode::Variable),
-        _ => Err(format!("unknown mode: {value}").into()),
+        "fixed" => Ok(Workload::Collection(CollectionMode::Fixed)),
+        "variable" => Ok(Workload::Collection(CollectionMode::Variable)),
+        "table" => Ok(Workload::Table),
+        _ => Err(format!("unknown workload: {value}").into()),
     }
 }
 
@@ -266,6 +447,8 @@ fn parse_scenario(value: &str) -> Result<Scenario, Box<dyn Error>> {
         "selection" => Ok(Scenario::Selection),
         "reverse" => Ok(Scenario::Reverse),
         "unchanged-redraw" => Ok(Scenario::UnchangedRedraw),
+        "visible-update" => Ok(Scenario::VisibleUpdate),
+        "offscreen-update" => Ok(Scenario::OffscreenUpdate),
         _ => Err(format!("unknown scenario: {value}").into()),
     }
 }

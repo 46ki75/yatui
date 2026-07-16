@@ -272,6 +272,33 @@ transitions must mark both previous and current focus nodes as damaged even
 after transition reporting consumes the event metadata; the retained
 invalidation now carries that dependency.
 
+The next cross-workload slice adds a facade-only virtualized service table. A
+shared application model owns fixed-height range construction, responsive column
+widths, stable active and selected keys, Unicode region data, and deterministic
+producer updates. ArborUI composes only visible and overscanned rows from public
+facade primitives; the matched side renders the same window through Ratatui
+0.30.2's stateful `Table`. Exact semantic and character-frame comparisons cover
+page navigation, selection, visible and offscreen updates, and narrow and wide
+resizes. Construction remains bounded through one million logical rows.
+
+At 100,000 rows, complete Criterion turns measure 189 versus 204 microseconds for
+Page Down, 55.4 versus 215 microseconds for selection, 279 versus 223 microseconds
+for resize, 181 versus 190 microseconds for a visible producer update, and 32.5
+versus 195 microseconds for an offscreen producer update, with ArborUI listed
+first. ArborUI line navigation remains approximately 55 microseconds from 1,000
+through one million rows; Ratatui remains approximately 198 to 206 microseconds.
+Cold construction and initial render measure 11.8 versus 12.3 milliseconds.
+
+The offscreen update is the strongest incremental result: it changes retained
+application data but not the visible projection, takes 34.8 microseconds in the
+ArborUI phase probe, performs no layout, spends 1.4 microseconds painting, and
+emits no production output. The visible update changes text, takes 166.0
+microseconds in the render phases, and emits 102 bytes through 68 writer calls.
+This distinction validates committed-frame reuse across a second workload while
+showing that visible text changes still pass through complete table-row layout.
+The deterministic update intentionally excludes thread scheduling and ingress
+latency, which Focus Queue measures separately.
+
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
 generated transitions, comparing patches, complete buffers, hit maps, retained
@@ -363,7 +390,7 @@ application sizing. Wrapped-row measurement remains a related open contract.
 This slice does not complete the production-scale proof. It leaves these
 requirements open:
 
-- Select and table controls driven by application requirements
+- Select and reusable table controls driven by application requirements
 - Form validation and broader loading or error recovery
 - Application-level code-size measurement and broader memory workloads
 - Integration with a real service, subprocess, or async executor rather than the
@@ -371,9 +398,10 @@ requirements open:
 
 The measured incremental path now reuses retained whole-frame geometry when no
 layout-affecting change occurred, committed logical content when no change at all
-occurred, and a conservative damaged-row band for paint-only work. Broader
-tables, scrolling logs, overlays, Unicode-heavy content, resize storms, and
-background updates should establish whether the same bottlenecks generalize
-before another local optimization. Select and table requirements can extend the
-pilot separately without treating this collection experiment as a stabilized
-widget API.
+occurred, and a conservative damaged-row band for paint-only work. The table
+slice broadens evidence to responsive columns, Unicode cells, resize, and
+deterministic background updates without stabilizing a widget API. Scrolling
+logs, overlays, Unicode grapheme stress beyond ordinary table cells, resize
+storms, and live ingress should establish whether the same bottlenecks generalize
+before another local optimization. Select and reusable table requirements can
+extend the pilot separately.

@@ -3,19 +3,22 @@
 use std::{convert::Infallible, num::NonZeroUsize};
 
 use arborui_example_collection_lab::{
-    CollectionMode, FixedHeightProvider, VariableHeightProvider, VisibleRange,
+    CollectionMode, FixedHeightProvider, TableAction, TableModel, VariableHeightProvider,
+    VisibleRange,
 };
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, ClearType, TestBackend, WindowSize},
     buffer::Buffer,
-    layout::{Position, Rect, Size},
+    layout::{Constraint, Position, Rect, Size},
     style::{Color, Modifier, Style},
+    widgets::{Cell, Row, StatefulWidget, Table, TableState},
 };
 
 const OVERSCAN_ROWS: usize = 2;
 const OVERSCAN_CELLS: usize = 3;
 const HEADER: &str = "Arrows/Page/Home/End move | Enter selects | v mode | r reverse | q quit";
+const TABLE_HEADER: &str = "Arrows/Page/Home/End move | Enter selects | u updates | q quit";
 
 /// One framework-neutral action in the matched scenario.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,6 +67,25 @@ pub struct SemanticState {
     pub constructed_rows: usize,
 }
 
+/// Observable state of the matched table workload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TableSemanticState {
+    /// Stable active row key.
+    pub active_key: Option<u64>,
+    /// Stable selected row key.
+    pub selected_key: Option<u64>,
+    /// Controlled row scroll offset.
+    pub scroll_offset: usize,
+    /// Application-owned data viewport height.
+    pub viewport_height: usize,
+    /// Row range constructed by the latest render.
+    pub visible_range: VisibleRange,
+    /// Number of rows constructed by the latest render.
+    pub constructed_rows: usize,
+    /// Latest accepted background-update generation.
+    pub generation: u64,
+}
+
 #[derive(Clone, Debug)]
 struct Item {
     key: u64,
@@ -84,6 +106,12 @@ pub struct RatatuiCollectionLab {
     scroll: usize,
     active: Option<u64>,
     selected: Option<u64>,
+    constructed_rows: usize,
+}
+
+/// Ratatui adapter around the framework-neutral table model.
+pub struct RatatuiTableLab {
+    model: TableModel,
     constructed_rows: usize,
 }
 
@@ -446,6 +474,138 @@ impl RatatuiCollectionLab {
     }
 }
 
+impl RatatuiTableLab {
+    /// Creates a generated table with explicit terminal dimensions.
+    #[must_use]
+    pub fn new(item_count: usize, width: u16, height: u16) -> Self {
+        Self {
+            model: TableModel::new(item_count, width, height),
+            constructed_rows: 0,
+        }
+    }
+
+    /// Applies one deterministic application action without drawing.
+    pub fn apply(&mut self, action: TableAction) {
+        self.model.apply(action);
+    }
+
+    /// Returns the dimensions expected by the next draw.
+    #[must_use]
+    pub const fn terminal_size(&self) -> (u16, u16) {
+        self.model.terminal_size()
+    }
+
+    /// Returns the shared application model.
+    #[must_use]
+    pub const fn model(&self) -> &TableModel {
+        &self.model
+    }
+
+    /// Returns current observable application state.
+    #[must_use]
+    pub fn semantic_state(&self) -> TableSemanticState {
+        TableSemanticState {
+            active_key: self.model.active_key(),
+            selected_key: self.model.selected_key(),
+            scroll_offset: self.model.scroll_offset(),
+            viewport_height: self.model.viewport_height(),
+            visible_range: self.model.visible_range(),
+            constructed_rows: self.constructed_rows,
+            generation: self.model.generation(),
+        }
+    }
+
+    /// Paints one complete desired table frame with Ratatui's stateful table widget.
+    pub fn render(&mut self, frame: &mut Frame<'_>) {
+        let range = self.model.visible_range();
+        self.constructed_rows = range.len();
+        let area = frame.area();
+        let buffer = frame.buffer_mut();
+        paint_clipped(buffer, area.x, area.y, TABLE_HEADER, Style::default());
+        if area.width == 0 || area.height < 3 {
+            return;
+        }
+
+        let panel_y = area.y.saturating_add(1);
+        let panel_height = u16::try_from(self.model.viewport_height().saturating_add(3))
+            .unwrap_or(u16::MAX)
+            .min(area.height.saturating_sub(1));
+        if panel_height < 3 {
+            return;
+        }
+        let border_style = Style::new().fg(Color::LightCyan);
+        paint_horizontal_border(buffer, area.x, panel_y, area.width, '┌', '┐', border_style);
+        paint_clipped(
+            buffer,
+            area.x.saturating_add(1),
+            panel_y,
+            " Virtualized service table ",
+            border_style,
+        );
+        let bottom = panel_y.saturating_add(panel_height.saturating_sub(1));
+        paint_horizontal_border(buffer, area.x, bottom, area.width, '└', '┘', border_style);
+        for y in panel_y.saturating_add(1)..bottom {
+            buffer[(area.x, y)].set_symbol("│").set_style(border_style);
+            if area.width > 1 {
+                buffer[(area.x.saturating_add(area.width - 1), y)]
+                    .set_symbol("│")
+                    .set_style(border_style);
+            }
+        }
+
+        let columns = self.model.columns();
+        let rows = self.model.rows()[range.start()..range.end()]
+            .iter()
+            .map(|record| {
+                let style = if self.model.selected_key() == Some(record.key()) {
+                    Style::new().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::new()
+                };
+                Row::new([
+                    Cell::from(record.key_display()),
+                    Cell::from(record.name()),
+                    Cell::from(record.region()),
+                    Cell::from(record.status()),
+                    Cell::from(record.value()),
+                ])
+                .style(style)
+            });
+        let widths = columns.widths().map(Constraint::Length);
+        let table = Table::new(rows, widths)
+            .header(
+                Row::new(["ID", "SERVICE", "REGION", "STATUS", "LATENCY"])
+                    .style(Style::new().add_modifier(Modifier::BOLD)),
+            )
+            .column_spacing(0)
+            .row_highlight_style(
+                Style::new()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let selected = self
+            .model
+            .active_key()
+            .and_then(|key| usize::try_from(key).ok())
+            .filter(|index| *index >= range.start() && *index < range.end())
+            .map(|index| index.saturating_sub(range.start()));
+        let mut state = TableState::new()
+            .with_offset(range.local_offset())
+            .with_selected(selected);
+        StatefulWidget::render(
+            table,
+            Rect::new(
+                area.x.saturating_add(1),
+                panel_y.saturating_add(1),
+                area.width.saturating_sub(2),
+                panel_height.saturating_sub(2),
+            ),
+            buffer,
+            &mut state,
+        );
+    }
+}
+
 /// Draws one application frame into Ratatui's logical test terminal.
 pub fn draw_test_frame(
     terminal: &mut Terminal<TestBackend>,
@@ -467,6 +627,32 @@ pub fn draw_test_terminal(
 pub fn draw_terminal<B: Backend>(
     terminal: &mut Terminal<B>,
     application: &mut RatatuiCollectionLab,
+) -> Result<(), B::Error> {
+    terminal.draw(|frame| application.render(frame))?;
+    Ok(())
+}
+
+/// Draws one table frame into Ratatui's logical test terminal.
+pub fn draw_test_table_frame(
+    terminal: &mut Terminal<TestBackend>,
+    application: &mut RatatuiTableLab,
+) -> Result<String, Infallible> {
+    draw_test_table_terminal(terminal, application)?;
+    Ok(buffer_characters(terminal.backend().buffer()))
+}
+
+/// Draws a table without materializing a character snapshot.
+pub fn draw_test_table_terminal(
+    terminal: &mut Terminal<TestBackend>,
+    application: &mut RatatuiTableLab,
+) -> Result<(), Infallible> {
+    draw_table_terminal(terminal, application)
+}
+
+/// Draws one complete table frame through any Ratatui backend.
+pub fn draw_table_terminal<B: Backend>(
+    terminal: &mut Terminal<B>,
+    application: &mut RatatuiTableLab,
 ) -> Result<(), B::Error> {
     terminal.draw(|frame| application.render(frame))?;
     Ok(())

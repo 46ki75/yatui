@@ -1,5 +1,11 @@
 //! Fixed and variable-height visible-range experiments using only `arborui`.
 
+mod table;
+
+pub use table::{
+    TableAction, TableColumns, TableLab, TableModel, TableRecord, table_viewport_height,
+};
+
 use std::{cell::Cell, num::NonZeroUsize};
 
 use arborui::{

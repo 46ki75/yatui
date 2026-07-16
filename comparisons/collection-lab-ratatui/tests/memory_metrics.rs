@@ -14,6 +14,15 @@ const ACTIONS: [&str; 6] = [
     "reverse",
     "unchanged-redraw",
 ];
+const TABLE_ACTIONS: [&str; 7] = [
+    "cold",
+    "page-down",
+    "resize",
+    "selection",
+    "visible-update",
+    "offscreen-update",
+    "unchanged-redraw",
+];
 
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
@@ -56,6 +65,24 @@ fn reports_isolated_memory_metrics() {
             }
             assert_viewport_bounded(framework, mode, &initial_render);
         }
+
+        for scenario in TABLE_ACTIONS {
+            let metrics = run_probe(framework, "table", scenario, ACTION_ITEM_COUNT);
+            assert_released(framework, "table", scenario, metrics);
+            print_metrics(framework, "table", scenario, ACTION_ITEM_COUNT, metrics);
+        }
+        let mut initial_render = Vec::new();
+        for scenario in ["model", "initial-render"] {
+            for item_count in ITEM_COUNTS {
+                let metrics = run_probe(framework, "table", scenario, item_count);
+                assert_released(framework, "table", scenario, metrics);
+                print_metrics(framework, "table", scenario, item_count, metrics);
+                if scenario == "initial-render" {
+                    initial_render.push(metrics);
+                }
+            }
+        }
+        assert_viewport_bounded(framework, "table", &initial_render);
     }
 }
 

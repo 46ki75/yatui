@@ -3,9 +3,12 @@
 use std::{hint::black_box, time::Duration};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiTableLab, draw_test_table_terminal,
+    draw_test_terminal,
 };
-use arborui_example_collection_lab::{CollectionLab, CollectionMode, Message};
+use arborui_example_collection_lab::{
+    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+};
 use arborui_test::{Size, TestApp};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ratatui::{Terminal, backend::TestBackend};
@@ -23,6 +26,35 @@ enum Scenario {
     Selection,
     Reverse,
     UnchangedRedraw,
+}
+
+#[derive(Clone, Copy)]
+enum TableScenario {
+    PageDown,
+    Selection,
+    Resize,
+    VisibleUpdate,
+    OffscreenUpdate,
+}
+
+impl TableScenario {
+    const ALL: [Self; 5] = [
+        Self::PageDown,
+        Self::Selection,
+        Self::Resize,
+        Self::VisibleUpdate,
+        Self::OffscreenUpdate,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::PageDown => "page-down",
+            Self::Selection => "selection",
+            Self::Resize => "resize",
+            Self::VisibleUpdate => "visible-update",
+            Self::OffscreenUpdate => "offscreen-update",
+        }
+    }
 }
 
 impl Scenario {
@@ -51,6 +83,128 @@ fn application_turns(criterion: &mut Criterion) {
     line_navigation(criterion);
     cold_initial_render(criterion);
     scenario_turns(criterion);
+    table_line_navigation(criterion);
+    table_cold_initial_render(criterion);
+    table_scenario_turns(criterion);
+}
+
+fn table_line_navigation(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("comparison/table-turn/line-navigation");
+    group.throughput(Throughput::Elements(1));
+    for item_count in [1_000usize, 100_000, 1_000_000] {
+        group.bench_with_input(
+            BenchmarkId::new("arborui", item_count),
+            &item_count,
+            |bencher, count| {
+                let mut application =
+                    TestApp::new(TableLab::new(*count, BASE_WIDTH, BASE_HEIGHT), base_size());
+                let mut down = true;
+                bencher.iter(|| {
+                    let action = if down {
+                        TableAction::Down
+                    } else {
+                        TableAction::Up
+                    };
+                    down = !down;
+                    black_box(application.send(action));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("ratatui", item_count),
+            &item_count,
+            |bencher, count| {
+                let (mut application, mut terminal) = ratatui_table_fixture(*count);
+                let mut down = true;
+                bencher.iter(|| {
+                    let action = if down {
+                        TableAction::Down
+                    } else {
+                        TableAction::Up
+                    };
+                    down = !down;
+                    ratatui_table_turn(&mut application, &mut terminal, action);
+                    black_box(application.semantic_state());
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn table_cold_initial_render(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("comparison/table-turn/cold-initial-render");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("arborui", |bencher| {
+        bencher.iter(|| {
+            black_box(TestApp::new(
+                TableLab::new(ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
+                base_size(),
+            ));
+        });
+    });
+    group.bench_function("ratatui", |bencher| {
+        bencher.iter(|| {
+            let mut application = RatatuiTableLab::new(ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT);
+            let mut terminal = Terminal::new(TestBackend::new(BASE_WIDTH, BASE_HEIGHT))
+                .expect("test terminal must open");
+            draw_test_table_terminal(&mut terminal, &mut application)
+                .expect("initial table frame must draw");
+            black_box((application, terminal));
+        });
+    });
+    group.finish();
+}
+
+fn table_scenario_turns(criterion: &mut Criterion) {
+    for scenario in TableScenario::ALL {
+        let mut group =
+            criterion.benchmark_group(format!("comparison/table-turn/{}", scenario.name()));
+        group.throughput(Throughput::Elements(1));
+        group.bench_function("arborui", |bencher| {
+            let mut application = TestApp::new(
+                TableLab::new(ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
+                base_size(),
+            );
+            prepare_arborui_table(&mut application, scenario);
+            let mut revision = 1u64;
+            bencher.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let started = std::time::Instant::now();
+                    arborui_table_turn(&mut application, scenario, revision);
+                    elapsed = elapsed.saturating_add(started.elapsed());
+                    reset_arborui_table(&mut application, scenario);
+                    revision = revision.saturating_add(1);
+                }
+                black_box(application.application().model().generation());
+                elapsed
+            });
+        });
+        group.bench_function("ratatui", |bencher| {
+            let (mut application, mut terminal) = ratatui_table_fixture(ITEM_COUNT);
+            prepare_ratatui_table(&mut application, &mut terminal, scenario);
+            let mut revision = 1u64;
+            bencher.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let started = std::time::Instant::now();
+                    ratatui_table_scenario_turn(
+                        &mut application,
+                        &mut terminal,
+                        scenario,
+                        revision,
+                    );
+                    elapsed = elapsed.saturating_add(started.elapsed());
+                    reset_ratatui_table(&mut application, &mut terminal, scenario);
+                    revision = revision.saturating_add(1);
+                }
+                black_box(application.semantic_state());
+                elapsed
+            });
+        });
+        group.finish();
+    }
 }
 
 fn line_navigation(criterion: &mut Criterion) {
@@ -328,6 +482,138 @@ fn arborui_semantic_marker(application: &TestApp<CollectionLab>) -> (Option<u64>
         application.application().active_key(),
         application.application().selected_key(),
     )
+}
+
+fn arborui_table_turn(application: &mut TestApp<TableLab>, scenario: TableScenario, revision: u64) {
+    match scenario {
+        TableScenario::PageDown => {
+            black_box(application.send(TableAction::PageDown));
+        }
+        TableScenario::Selection => {
+            black_box(application.send(TableAction::SelectActive));
+        }
+        TableScenario::Resize => {
+            black_box(application.resize(Size::new(BASE_WIDTH, RESIZED_HEIGHT)));
+        }
+        TableScenario::VisibleUpdate => {
+            black_box(application.send(TableAction::BackgroundUpdate { key: 0, revision }));
+        }
+        TableScenario::OffscreenUpdate => {
+            black_box(application.send(TableAction::BackgroundUpdate {
+                key: u64::try_from(ITEM_COUNT - 1).unwrap_or(u64::MAX),
+                revision,
+            }));
+        }
+    }
+}
+
+fn reset_arborui_table(application: &mut TestApp<TableLab>, scenario: TableScenario) {
+    match scenario {
+        TableScenario::PageDown => {
+            application.send(TableAction::Home);
+        }
+        TableScenario::Selection => {
+            application.send(TableAction::Down);
+            application.send(TableAction::SelectActive);
+            application.send(TableAction::Home);
+        }
+        TableScenario::Resize => {
+            application.resize(base_size());
+        }
+        TableScenario::VisibleUpdate | TableScenario::OffscreenUpdate => {}
+    }
+}
+
+fn prepare_arborui_table(application: &mut TestApp<TableLab>, scenario: TableScenario) {
+    if matches!(scenario, TableScenario::Selection) {
+        reset_arborui_table(application, scenario);
+    }
+}
+
+fn ratatui_table_scenario_turn(
+    application: &mut RatatuiTableLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: TableScenario,
+    revision: u64,
+) {
+    let action = match scenario {
+        TableScenario::PageDown => TableAction::PageDown,
+        TableScenario::Selection => TableAction::SelectActive,
+        TableScenario::Resize => {
+            terminal.backend_mut().resize(BASE_WIDTH, RESIZED_HEIGHT);
+            TableAction::Resize {
+                width: BASE_WIDTH,
+                height: RESIZED_HEIGHT,
+            }
+        }
+        TableScenario::VisibleUpdate => TableAction::BackgroundUpdate { key: 0, revision },
+        TableScenario::OffscreenUpdate => TableAction::BackgroundUpdate {
+            key: u64::try_from(ITEM_COUNT - 1).unwrap_or(u64::MAX),
+            revision,
+        },
+    };
+    ratatui_table_turn(application, terminal, action);
+}
+
+fn reset_ratatui_table(
+    application: &mut RatatuiTableLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: TableScenario,
+) {
+    match scenario {
+        TableScenario::PageDown => {
+            ratatui_table_turn(application, terminal, TableAction::Home);
+        }
+        TableScenario::Selection => {
+            for action in [
+                TableAction::Down,
+                TableAction::SelectActive,
+                TableAction::Home,
+            ] {
+                ratatui_table_turn(application, terminal, action);
+            }
+        }
+        TableScenario::Resize => {
+            terminal.backend_mut().resize(BASE_WIDTH, BASE_HEIGHT);
+            ratatui_table_turn(
+                application,
+                terminal,
+                TableAction::Resize {
+                    width: BASE_WIDTH,
+                    height: BASE_HEIGHT,
+                },
+            );
+        }
+        TableScenario::VisibleUpdate | TableScenario::OffscreenUpdate => {}
+    }
+}
+
+fn prepare_ratatui_table(
+    application: &mut RatatuiTableLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: TableScenario,
+) {
+    if matches!(scenario, TableScenario::Selection) {
+        reset_ratatui_table(application, terminal, scenario);
+    }
+}
+
+fn ratatui_table_fixture(item_count: usize) -> (RatatuiTableLab, Terminal<TestBackend>) {
+    let mut application = RatatuiTableLab::new(item_count, BASE_WIDTH, BASE_HEIGHT);
+    let mut terminal =
+        Terminal::new(TestBackend::new(BASE_WIDTH, BASE_HEIGHT)).expect("test terminal must open");
+    draw_test_table_terminal(&mut terminal, &mut application)
+        .expect("initial table frame must draw");
+    (application, terminal)
+}
+
+fn ratatui_table_turn(
+    application: &mut RatatuiTableLab,
+    terminal: &mut Terminal<TestBackend>,
+    action: TableAction,
+) {
+    application.apply(action);
+    draw_test_table_terminal(terminal, application).expect("table frame must draw");
 }
 
 fn viewport_height(terminal_height: u16) -> usize {

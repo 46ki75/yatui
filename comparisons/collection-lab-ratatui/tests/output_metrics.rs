@@ -9,9 +9,12 @@ use arborui::{
     Capabilities, CrosstermBackend as ArboruiCrosstermBackend, FramePatch, TerminalBackend,
 };
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiTableLab, draw_test_table_terminal,
+    draw_test_terminal,
 };
-use arborui_example_collection_lab::{CollectionLab, CollectionMode, Message};
+use arborui_example_collection_lab::{
+    CollectionLab, CollectionMode, Message, TableAction, TableLab,
+};
 use arborui_test::{Size as ArboruiSize, TestApp};
 use ratatui::{
     Terminal,
@@ -34,6 +37,38 @@ enum Scenario {
     Selection,
     Reverse,
     UnchangedRedraw,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TableScenario {
+    InitialRender,
+    PageDown,
+    Resize,
+    Selection,
+    VisibleUpdate,
+    OffscreenUpdate,
+}
+
+impl TableScenario {
+    const ALL: [Self; 6] = [
+        Self::InitialRender,
+        Self::PageDown,
+        Self::Resize,
+        Self::Selection,
+        Self::VisibleUpdate,
+        Self::OffscreenUpdate,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::InitialRender => "initial-render",
+            Self::PageDown => "page-down",
+            Self::Resize => "resize",
+            Self::Selection => "selection",
+            Self::VisibleUpdate => "visible-update",
+            Self::OffscreenUpdate => "offscreen-update",
+        }
+    }
 }
 
 impl Scenario {
@@ -130,6 +165,38 @@ fn reports_production_ansi_output_metrics() {
     }
 }
 
+#[test]
+fn reports_table_ansi_output_metrics() {
+    println!("| Scenario | Framework | ANSI bytes | Writer calls | Flushes |");
+    println!("| --- | --- | ---: | ---: | ---: |");
+
+    for scenario in TableScenario::ALL {
+        let arborui = arborui_table_metrics(scenario);
+        let ratatui = ratatui_table_metrics(scenario);
+        println!(
+            "| {} | ArborUI | {} | {} | {} |",
+            scenario.name(),
+            arborui.bytes,
+            arborui.writes,
+            arborui.flushes
+        );
+        println!(
+            "| {} | Ratatui | {} | {} | {} |",
+            scenario.name(),
+            ratatui.bytes,
+            ratatui.writes,
+            ratatui.flushes
+        );
+
+        if matches!(scenario, TableScenario::OffscreenUpdate) {
+            assert_eq!(arborui, OutputMetrics::default());
+        } else {
+            assert!(arborui.bytes > 0);
+            assert!(ratatui.bytes > 0);
+        }
+    }
+}
+
 fn arborui_metrics(mode: CollectionMode, scenario: Scenario) -> OutputMetrics {
     let mut application = TestApp::new(
         CollectionLab::new(mode, ITEM_COUNT, usize::from(HEIGHT - 4)),
@@ -183,6 +250,47 @@ fn serialize_arborui(patch: &FramePatch) -> OutputMetrics {
         .write_patch(patch)
         .expect("ArborUI patch must serialize");
     metrics.metrics()
+}
+
+fn arborui_table_metrics(scenario: TableScenario) -> OutputMetrics {
+    let mut application = TestApp::new(
+        TableLab::new(ITEM_COUNT, WIDTH, HEIGHT),
+        ArboruiSize::new(WIDTH, HEIGHT),
+    );
+    let patch = match scenario {
+        TableScenario::InitialRender => application.last_frame_patch().cloned(),
+        TableScenario::PageDown => patch_after_table(&mut application, TableAction::PageDown),
+        TableScenario::Resize => {
+            let previous_count = application.frame_patches().len();
+            application.resize(ArboruiSize::new(WIDTH, RESIZED_HEIGHT));
+            application.frame_patches().get(previous_count).cloned()
+        }
+        TableScenario::Selection => patch_after_table(&mut application, TableAction::SelectActive),
+        TableScenario::VisibleUpdate => patch_after_table(
+            &mut application,
+            TableAction::BackgroundUpdate {
+                key: 0,
+                revision: 1,
+            },
+        ),
+        TableScenario::OffscreenUpdate => patch_after_table(
+            &mut application,
+            TableAction::BackgroundUpdate {
+                key: u64::try_from(ITEM_COUNT - 1).unwrap_or(u64::MAX),
+                revision: 1,
+            },
+        ),
+    };
+    patch.map_or_else(OutputMetrics::default, |patch| serialize_arborui(&patch))
+}
+
+fn patch_after_table(
+    application: &mut TestApp<TableLab>,
+    action: TableAction,
+) -> Option<FramePatch> {
+    let previous_count = application.frame_patches().len();
+    application.send(action);
+    application.frame_patches().get(previous_count).cloned()
 }
 
 fn ratatui_metrics(mode: CollectionMode, scenario: Scenario) -> OutputMetrics {
@@ -247,6 +355,50 @@ fn serialize_ratatui(previous: &Buffer, current: &Buffer, clear: bool) -> Output
         .expect("Ratatui diff must serialize");
     Backend::flush(&mut backend).expect("Ratatui output must flush");
     metrics.metrics()
+}
+
+fn ratatui_table_metrics(scenario: TableScenario) -> OutputMetrics {
+    let mut application = RatatuiTableLab::new(ITEM_COUNT, WIDTH, HEIGHT);
+    let mut terminal =
+        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+    draw_test_table_terminal(&mut terminal, &mut application)
+        .expect("initial table frame must draw");
+
+    if matches!(scenario, TableScenario::InitialRender) {
+        let initial = terminal.backend().buffer().clone();
+        let blank = Buffer::empty(Rect::new(0, 0, WIDTH, HEIGHT));
+        return serialize_ratatui(&blank, &initial, false);
+    }
+    let previous = terminal.backend().buffer().clone();
+    let action = match scenario {
+        TableScenario::PageDown => TableAction::PageDown,
+        TableScenario::Resize => {
+            terminal.backend_mut().resize(WIDTH, RESIZED_HEIGHT);
+            TableAction::Resize {
+                width: WIDTH,
+                height: RESIZED_HEIGHT,
+            }
+        }
+        TableScenario::Selection => TableAction::SelectActive,
+        TableScenario::VisibleUpdate => TableAction::BackgroundUpdate {
+            key: 0,
+            revision: 1,
+        },
+        TableScenario::OffscreenUpdate => TableAction::BackgroundUpdate {
+            key: u64::try_from(ITEM_COUNT - 1).unwrap_or(u64::MAX),
+            revision: 1,
+        },
+        TableScenario::InitialRender => unreachable!("initial render returned above"),
+    };
+    application.apply(action);
+    draw_test_table_terminal(&mut terminal, &mut application).expect("table frame must draw");
+    let current = terminal.backend().buffer().clone();
+    if matches!(scenario, TableScenario::Resize) {
+        let blank = Buffer::empty(Rect::new(0, 0, WIDTH, RESIZED_HEIGHT));
+        serialize_ratatui(&blank, &current, true)
+    } else {
+        serialize_ratatui(&previous, &current, false)
+    }
 }
 
 fn print_metrics(
