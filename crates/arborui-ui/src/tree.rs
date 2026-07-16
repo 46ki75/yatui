@@ -614,12 +614,22 @@ impl UiTree {
         let width_policy = renderer.width_policy();
         staged.stage_frame(element, viewport, width_policy)?;
         let layout = staged.prepare_frame_layout(element, viewport, width_policy, force_layout)?;
-        let frame = if !force_layout && renderer_matches && staged.pending == Invalidation::None {
-            renderer.prepare_reused(layout.cursor)?
-        } else {
-            renderer.prepare(viewport, layout.cursor, |canvas| {
+        let frame = match (force_layout, renderer_matches, staged.pending) {
+            (false, true, Invalidation::None) => renderer.prepare_reused(layout.cursor)?,
+            (false, true, Invalidation::Paint) => {
+                renderer.prepare_from_current(layout.cursor, |canvas| {
+                    staged.repaint_damaged_rows(
+                        element,
+                        canvas,
+                        viewport,
+                        layout.root,
+                        layout.focused,
+                    )
+                })?
+            }
+            _ => renderer.prepare(viewport, layout.cursor, |canvas| {
                 staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
-            })?
+            })?,
         };
         staged.finish_frame();
         Ok(PreparedUiFrame {
@@ -656,13 +666,22 @@ impl UiTree {
             )
         };
 
-        let (frame, renderer_timings) = if renderer_matches && staged.pending == Invalidation::None
-        {
-            renderer.prepare_reused_timed(layout.cursor)?
-        } else {
-            renderer.prepare_timed(viewport, layout.cursor, |canvas| {
+        let (frame, renderer_timings) = match (renderer_matches, staged.pending) {
+            (true, Invalidation::None) => renderer.prepare_reused_timed(layout.cursor)?,
+            (true, Invalidation::Paint) => {
+                renderer.prepare_from_current_timed(layout.cursor, |canvas| {
+                    staged.repaint_damaged_rows(
+                        element,
+                        canvas,
+                        viewport,
+                        layout.root,
+                        layout.focused,
+                    )
+                })?
+            }
+            _ => renderer.prepare_timed(viewport, layout.cursor, |canvas| {
                 staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
-            })?
+            })?,
         };
         staged.finish_frame();
         let prepared = PreparedUiFrame {
@@ -820,6 +839,66 @@ impl UiTree {
                 focused,
             },
         )
+    }
+
+    fn repaint_damaged_rows<Message>(
+        &self,
+        element: &Element<'_, Message>,
+        canvas: &mut Canvas<'_>,
+        viewport: Size,
+        root: NodeId,
+        focused: Option<NodeId>,
+    ) -> Result<(), DrawError> {
+        let Some(damage) = self.damaged_row_band(viewport) else {
+            return Ok(());
+        };
+        canvas.fill(damage, Style::default())?;
+        self.paint_node(
+            root,
+            element,
+            canvas,
+            PaintContext {
+                clip: damage,
+                hit: None,
+                style: Style::default(),
+                focused,
+            },
+        )
+    }
+
+    fn damaged_row_band(&self, viewport: Size) -> Option<Rect> {
+        let viewport = Rect::from_origin_size(Point::ORIGIN, viewport);
+        let mut top = i32::MAX;
+        let mut bottom = i32::MIN;
+        let mut include = |bounds: Rect| {
+            let Some(damage) = bounds.intersection(viewport) else {
+                return;
+            };
+            top = top.min(damage.y);
+            bottom = bottom.max(damage.bottom());
+        };
+        for node in self
+            .nodes
+            .values()
+            .filter(|node| node.invalidation == Invalidation::Paint)
+        {
+            include(node.layout);
+        }
+        if let Some(change) = self.pending_focus_change {
+            for node in [change.previous, change.current].into_iter().flatten() {
+                if let Some(node) = self.nodes.get(&node) {
+                    include(node.layout);
+                }
+            }
+        }
+        (top < bottom).then(|| {
+            Rect::new(
+                0,
+                top,
+                viewport.width,
+                u16::try_from(bottom - top).expect("viewport-clipped damage height fits u16"),
+            )
+        })
     }
 
     fn finish_frame(&mut self) {
@@ -1070,10 +1149,9 @@ impl UiTree {
             .nodes
             .get(&retained)
             .expect("element and retained tree have matching structure");
-        let clip = inherited
-            .clip
-            .intersection(node.layout)
-            .unwrap_or(Rect::ZERO);
+        let Some(clip) = inherited.clip.intersection(node.layout) else {
+            return Ok(());
+        };
         let style = inherit_style(inherited.style, node.visual_style);
         let style = if inherited.focused == Some(retained) {
             inherit_style(style, node.focus_style)
@@ -1275,6 +1353,11 @@ impl UiTree {
     fn record_focus_change(&mut self, change: FocusChange) {
         if !change.changed() {
             return;
+        }
+        for node in [change.previous, change.current].into_iter().flatten() {
+            if let Some(node) = self.nodes.get_mut(&node) {
+                node.invalidation.request(Invalidation::Paint);
+            }
         }
         let combined = match self.pending_focus_change {
             Some(previous) => FocusChange {
@@ -1692,6 +1775,53 @@ mod tests {
         let repaint = tree.prepare(&view, size, &mut renderer)?;
         assert_eq!(paint_calls.get(), 2);
         assert!(repaint.patch().full_repaint);
+        Ok(())
+    }
+
+    #[test]
+    fn paint_only_preparation_skips_clean_row_callbacks() -> Result<(), UiError> {
+        fn counted_row(
+            key: u64,
+            text: &'static str,
+            style: Style,
+            calls: &Rc<Cell<usize>>,
+        ) -> Element<'static, ()> {
+            let calls = Rc::clone(calls);
+            Element::text(text)
+                .key(key)
+                .style(style)
+                .paint(0, move |_, _| {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                })
+        }
+
+        let size = Size::new(8, 4);
+        let calls = std::array::from_fn::<_, 4, _>(|_| Rc::new(Cell::new(0)));
+        let initial = Element::container([
+            counted_row(0, "zero", Style::new(), &calls[0]),
+            counted_row(1, "one", Style::new(), &calls[1]),
+            counted_row(2, "two", Style::new(), &calls[2]),
+            counted_row(3, "three", Style::new(), &calls[3]),
+        ])
+        .layout(LayoutStyle::new().direction(FlexDirection::Column));
+        let mut tree = UiTree::new();
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        prepare_and_commit(&mut tree, &initial, size, &mut renderer)
+            .expect("initial frame commits");
+        assert!(calls.iter().all(|calls| calls.get() == 1));
+
+        let changed = Element::container([
+            counted_row(0, "zero", Style::new(), &calls[0]),
+            counted_row(1, "one", Style::new().foreground(Color::Blue), &calls[1]),
+            counted_row(2, "two", Style::new(), &calls[2]),
+            counted_row(3, "three", Style::new(), &calls[3]),
+        ])
+        .layout(LayoutStyle::new().direction(FlexDirection::Column));
+        let prepared = tree.prepare(&changed, size, &mut renderer)?;
+
+        assert_eq!(calls.each_ref().map(|calls| calls.get()), [1, 2, 1, 1]);
+        assert_eq!(tree.commit(prepared, &mut renderer), Ok(()));
         Ok(())
     }
 

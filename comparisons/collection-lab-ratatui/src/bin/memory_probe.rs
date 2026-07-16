@@ -29,6 +29,7 @@ enum Scenario {
     InitialRender,
     PageDown,
     Resize,
+    Selection,
     Reverse,
     UnchangedRedraw,
 }
@@ -95,11 +96,20 @@ fn measure_arborui(mode: CollectionMode, scenario: Scenario, item_count: usize) 
                 application
             })
         }
-        Scenario::PageDown | Scenario::Resize | Scenario::Reverse | Scenario::UnchangedRedraw => {
+        Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::UnchangedRedraw => {
             let mut application = TestApp::new(
                 CollectionLab::new(mode, item_count, viewport_height(HEIGHT)),
                 base_size(),
             );
+            if matches!(scenario, Scenario::Selection) {
+                application.send(Message::Down);
+                application.send(Message::SelectActive);
+                application.send(Message::Home);
+            }
             measure(move || {
                 match scenario {
                     Scenario::PageDown => {
@@ -107,6 +117,9 @@ fn measure_arborui(mode: CollectionMode, scenario: Scenario, item_count: usize) 
                     }
                     Scenario::Resize => {
                         application.resize(Size::new(WIDTH, RESIZED_HEIGHT));
+                    }
+                    Scenario::Selection => {
+                        application.send(Message::SelectActive);
                     }
                     Scenario::Reverse => {
                         application.send(Message::Reverse);
@@ -147,8 +160,23 @@ fn measure_ratatui(mode: CollectionMode, scenario: Scenario, item_count: usize) 
                 (application, terminal)
             })
         }
-        Scenario::PageDown | Scenario::Resize | Scenario::Reverse | Scenario::UnchangedRedraw => {
+        Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::UnchangedRedraw => {
             let (mut application, mut terminal) = ratatui_fixture(mode, item_count);
+            if matches!(scenario, Scenario::Selection) {
+                for action in [
+                    ComparisonAction::Down,
+                    ComparisonAction::SelectActive,
+                    ComparisonAction::Home,
+                ] {
+                    application.apply(action);
+                    draw_test_terminal(&mut terminal, &mut application)
+                        .expect("selection fixture must draw");
+                }
+            }
             measure(move || {
                 match scenario {
                     Scenario::PageDown => application.apply(ComparisonAction::PageDown),
@@ -159,6 +187,7 @@ fn measure_ratatui(mode: CollectionMode, scenario: Scenario, item_count: usize) 
                             height: RESIZED_HEIGHT,
                         });
                     }
+                    Scenario::Selection => application.apply(ComparisonAction::SelectActive),
                     Scenario::Reverse => application.apply(ComparisonAction::Reverse),
                     Scenario::UnchangedRedraw => application.apply(ComparisonAction::Home),
                     Scenario::Model | Scenario::Cold | Scenario::InitialRender => {
@@ -234,6 +263,7 @@ fn parse_scenario(value: &str) -> Result<Scenario, Box<dyn Error>> {
         "initial-render" => Ok(Scenario::InitialRender),
         "page-down" => Ok(Scenario::PageDown),
         "resize" => Ok(Scenario::Resize),
+        "selection" => Ok(Scenario::Selection),
         "reverse" => Ok(Scenario::Reverse),
         "unchanged-redraw" => Ok(Scenario::UnchangedRedraw),
         _ => Err(format!("unknown scenario: {value}").into()),

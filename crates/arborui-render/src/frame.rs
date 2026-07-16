@@ -732,12 +732,64 @@ impl Renderer {
         Ok((prepared, FramePreparationTimings { paint, diff }))
     }
 
+    /// Clones committed logical content, selectively repaints it, and diffs it.
+    ///
+    /// Unpainted cells and hit targets retain their committed values. The caller
+    /// must clear changed regions and replay every painter that can affect them.
+    pub fn prepare_from_current<F>(
+        &mut self,
+        cursor: CursorState,
+        paint: F,
+    ) -> Result<PreparedFrame, RenderError>
+    where
+        F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
+    {
+        let (next, hit_map, graphemes) = self.repaint_current_frame(paint)?;
+        self.diff_frame(next, hit_map, graphemes, cursor)
+    }
+
+    /// Selectively repaints committed logical content while measuring each phase.
+    ///
+    /// Cloning and selective painting are reported as paint work; patch
+    /// construction is reported as diff work.
+    pub fn prepare_from_current_timed<F>(
+        &mut self,
+        cursor: CursorState,
+        paint: F,
+    ) -> Result<(PreparedFrame, FramePreparationTimings), RenderError>
+    where
+        F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
+    {
+        let paint_started = Instant::now();
+        let (next, hit_map, graphemes) = self.repaint_current_frame(paint)?;
+        let paint = paint_started.elapsed();
+
+        let diff_started = Instant::now();
+        let prepared = self.diff_frame(next, hit_map, graphemes, cursor)?;
+        let diff = diff_started.elapsed();
+        Ok((prepared, FramePreparationTimings { paint, diff }))
+    }
+
     fn clone_current_frame(&self) -> (Buffer, HitMap, GraphemeStore) {
         (
             self.current.clone(),
             self.hit_map.clone(),
             self.graphemes.clone(),
         )
+    }
+
+    fn repaint_current_frame<F>(
+        &self,
+        paint: F,
+    ) -> Result<(Buffer, HitMap, GraphemeStore), RenderError>
+    where
+        F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
+    {
+        let (mut next, mut hit_map, mut graphemes) = self.clone_current_frame();
+        let mut canvas =
+            Canvas::with_hit_map(&mut next, &mut graphemes, &mut hit_map, self.width_policy);
+        paint(&mut canvas)?;
+        Ok((next, hit_map, graphemes))
     }
 
     fn paint_frame<F>(
@@ -1001,6 +1053,51 @@ mod tests {
         assert!(repaint.patch().full_repaint);
         assert_eq!(repaint.patch().runs.len(), usize::from(size.height));
         assert_eq!(repaint.buffer(), renderer.current());
+        Ok(())
+    }
+
+    #[test]
+    fn repaint_from_current_preserves_clean_rows_and_replaces_hits() -> Result<(), RenderError> {
+        let size = Size::new(4, 2);
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let initial = renderer.prepare(size, CursorState::HIDDEN, |canvas| {
+            let mut first = canvas
+                .scoped(Rect::new(0, 0, 4, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(1)));
+            first.draw_text(Point::ORIGIN, "界a", Style::default(), None)?;
+            let mut second = canvas
+                .scoped(Rect::new(0, 1, 4, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(2)));
+            second.draw_text(Point::new(0, 1), "old", Style::default(), None)?;
+            Ok(())
+        })?;
+        assert_eq!(renderer.commit(initial), Ok(()));
+        let committed = renderer.current().clone();
+
+        let changed = renderer.prepare_from_current(CursorState::HIDDEN, |canvas| {
+            canvas.fill(Rect::new(0, 1, 4, 1), Style::default())?;
+            let mut second = canvas
+                .scoped(Rect::new(0, 1, 4, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(3)));
+            second.draw_text(Point::new(0, 1), "new", Style::default(), None)?;
+            Ok(())
+        })?;
+
+        assert_eq!(&changed.buffer().cells()[..4], &committed.cells()[..4]);
+        assert_eq!(changed.patch().runs.len(), 1);
+        assert_eq!(changed.patch().runs[0].position, Point::new(0, 1));
+        assert_eq!(
+            changed.hit_map().get(Point::ORIGIN),
+            Some(crate::HitId::new(1))
+        );
+        assert_eq!(
+            changed.hit_map().get(Point::new(0, 1)),
+            Some(crate::HitId::new(3))
+        );
+        let mut replay = renderer.current().clone();
+        assert_eq!(changed.patch().apply_to(&mut replay), Ok(()));
+        assert_eq!(&replay, changed.buffer());
+        assert_eq!(renderer.commit(changed), Ok(()));
         Ok(())
     }
 

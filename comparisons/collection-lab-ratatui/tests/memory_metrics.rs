@@ -6,7 +6,14 @@ const ACTION_ITEM_COUNT: usize = 100_000;
 const ITEM_COUNTS: [usize; 3] = [1_000, 100_000, 1_000_000];
 const FRAMEWORKS: [&str; 2] = ["arborui", "ratatui"];
 const MODES: [&str; 2] = ["fixed", "variable"];
-const ACTIONS: [&str; 5] = ["cold", "page-down", "resize", "reverse", "unchanged-redraw"];
+const ACTIONS: [&str; 6] = [
+    "cold",
+    "page-down",
+    "resize",
+    "selection",
+    "reverse",
+    "unchanged-redraw",
+];
 
 #[derive(Clone, Copy, Debug)]
 struct Metrics {

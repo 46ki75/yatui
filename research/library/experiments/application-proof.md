@@ -236,29 +236,41 @@ measured result.
 At 100,000 fixed-height items, Page Down allocates and retains 122,177/44,884
 bytes in ArborUI and 0/0 in Ratatui. After retained-layout reuse, unchanged
 redraw allocates and retains 56,648/39,892 bytes in ArborUI and 0/0 in Ratatui.
-Resize is
-302,653/123,428 versus 165,888/165,888 bytes, while reverse is
-2,520,281/2,444,860 versus 2,400,008/2,400,008 bytes. Variable-height unchanged
-redraw allocates and retains 47,880/35,492 bytes after the same optimization.
-These are operation-local allocations; fixture allocations made before profiling
-are intentionally excluded.
+Damaged-row selection allocates and retains 73,621/44,692 bytes versus 0/0.
+Resize is 302,653/123,428 versus 165,888/165,888 bytes, while reverse is
+2,520,281/2,444,860 versus 2,400,008/2,400,008 bytes. Variable-height selection
+is 73,054/42,532, while unchanged redraw allocates and retains 47,880/35,492
+bytes. These are operation-local allocations; fixture allocations made before
+profiling are intentionally excluded.
 
 Opt-in ArborUI instrumentation now separates application view construction,
 staged reconciliation, layout, paint, diff, commit, post-commit refresh, and
 combined terminal validation/serialization/write. Existing untimed methods do
 not read the clock, and the transactional write-before-commit ordering is
-unchanged. In the 100-sample headless comparison, fixed selection and unchanged
-redraw now spend zero measured time in layout and complete in 54.9 and 45.7
-microseconds, down from 75.7 and 69.7. Variable selection and unchanged redraw
-initially completed in 56.9 and 56.0 microseconds, down from 83.7 and 101.0. The
-next measured optimization reuses the exact committed logical frame when
-reconciliation reports no change, reducing fixed and variable unchanged-redraw
-render totals further to 14.7 and 16.8 microseconds. Owned buffer, hit-map, and
-grapheme state are still cloned so preparation remains transactional. A renderer
-generation mismatch, including physical-state invalidation, returns to complete
-painting. Layout-required Page Down, resize, and reverse turns continue through
-complete layout. Ratatui does not expose equivalent internal boundaries, so only
-its complete-turn timings are compared.
+unchanged. The first retained-layout measurement removed layout time from fixed
+and variable selection and unchanged redraw. The subsequent optimization reuses
+the exact committed logical frame when reconciliation reports no change,
+reducing fixed and variable unchanged-redraw render totals to 14.7 and 16.8
+microseconds in that run. Owned buffer, hit-map, and grapheme state are still
+cloned so preparation remains transactional. A renderer generation mismatch,
+including physical-state invalidation, returns to complete painting.
+Layout-required Page Down, resize, and reverse turns continue through complete
+layout. Ratatui does not expose equivalent internal boundaries, so only its
+complete-turn timings are compared.
+
+The damaged-row optimization clones the same owned committed state for
+paint-only work, clears one full-width vertical band covering paint-invalid
+nodes, and replays only painters intersecting that band in normal order. The
+full-width boundary preserves wide-grapheme atomicity, while ordered replay
+preserves overlap and hit-map semantics. Fixed selection paint fell from 33.4 to
+13.1 microseconds and the complete render total from 50.0 to 33.1. Variable
+selection paint fell from 43.1 to 18.7 microseconds and the render total from
+62.4 to 38.3. Complete Criterion turns measured 33.3 and 38.4 microseconds,
+about 40% below the preceding documented fixed and variable selection results.
+Selection serialization remains unchanged. The full gate exposed that focus
+transitions must mark both previous and current focus nodes as damaged even
+after transition reporting consumes the event metadata; the retained
+invalidation now carries that dependency.
 
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
@@ -358,9 +370,10 @@ requirements open:
   demonstration thread producer
 
 The measured incremental path now reuses retained whole-frame geometry when no
-layout-affecting change occurred and committed logical content when no change at
-all occurred. Paint remains the largest phase for paint-only selection turns, so
-the next narrow experiment should skip clean paint work without weakening
-full-reference or transactional correctness contracts. Select and table
-requirements can extend the pilot separately without treating this local
-collection experiment as a stabilized widget API.
+layout-affecting change occurred, committed logical content when no change at all
+occurred, and a conservative damaged-row band for paint-only work. Broader
+tables, scrolling logs, overlays, Unicode-heavy content, resize storms, and
+background updates should establish whether the same bottlenecks generalize
+before another local optimization. Select and table requirements can extend the
+pilot separately without treating this collection experiment as a stabilized
+widget API.

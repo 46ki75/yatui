@@ -198,11 +198,21 @@ commit or invalidate
 
 The renderer normally performs complete painting and a complete buffer scan. UI
 preparation may reuse committed whole-frame geometry when reconciliation proves
-that no layout-affecting change occurred. If reconciliation reports no change
-and the UI tree still matches the exact committed renderer generation, it also
-prepares owned state from the committed logical frame without invoking paint
-callbacks. `UiTree::prepare_full` always computes layout and paints from scratch
-to provide the reference output for optimized preparation.
+that no layout-affecting change occurred. For paint-only work against the exact
+committed renderer generation, it clones committed logical state, clears one
+full-width band covering the invalid rows, and replays intersecting painters in
+normal order. Full-width damage avoids cutting old or new wide grapheme spans;
+replaying every intersecting layer preserves overlap and hit-map ordering. Focus
+transitions mark both the previous and current focus nodes for paint because
+their focused styles can affect complete descendant content.
+
+If reconciliation reports no change against that same generation, preparation
+reuses the clone without invoking paint callbacks. Renderer mismatch, resize,
+layout, or recomposition falls back to complete painting. `UiTree::prepare_full`
+always computes layout and paints from scratch to provide the reference output
+for optimized preparation. `Renderer::prepare_from_current` exposes the owned
+clone-and-repaint transaction primitive; callers must clear changed regions and
+replay every painter that can affect them.
 
 ## Frame Patch
 
@@ -290,7 +300,7 @@ Optimizations should be considered in this order:
 4. Cache text measurement.
 5. Reuse buffers and grapheme allocations.
 6. Reuse clean whole-frame geometry, then skip clean layout subtrees.
-7. Reuse an unchanged committed logical frame, then skip clean paint subtrees.
+7. Reuse unchanged committed logical state and repaint retained damaged rows.
 8. Restrict diff scanning to damaged rows or regions.
 
 Each optimization must produce the same logical frame and patch replay result

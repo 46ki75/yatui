@@ -456,10 +456,10 @@ bounded retained tree size through facade-only tests and benchmarks. A matched,
 isolated Ratatui 0.30.2 package now proves semantic and character-frame parity,
 bounded million-row construction, idle policy, expanded complete logical-turn
 timings, production Crossterm serialization counts, isolated allocation and
-retained-memory measurements, ArborUI render-phase attribution, and the first
-full-reference-checked retained-layout optimization. Table and select controls,
-broader workload baselines, and the complete production-scale proof remain
-planned.
+  retained-memory measurements, ArborUI render-phase attribution, and
+  full-reference-checked retained-layout, unchanged-frame, and damaged-row
+  optimizations. Table and select controls, broader workload baselines, and the
+  complete production-scale proof remain planned.
 
 Deliver:
 
@@ -486,10 +486,10 @@ without a configured bound or observable pressure signal.
 
 Status: in progress. Milestone 11 established the first application-level
 allocation, retained-memory, and phase-timing baseline. Whole-frame retained
-layout reuse and unchanged-frame logical-content reuse are now checked against a
-separately callable full-layout/full-paint reference and improve the measured
-collection turns; cross-workload evidence and finer-grained incremental work
-remain open.
+layout reuse, unchanged-frame logical-content reuse, and conservative
+full-width damaged-row repaint are now checked against a separately callable
+full-layout/full-paint reference and improve the measured collection turns;
+cross-workload evidence and finer-grained incremental work remain open.
 
 Deliver:
 
