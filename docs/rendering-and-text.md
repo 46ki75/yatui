@@ -196,9 +196,10 @@ backend writes complete patch
 commit or invalidate
 ```
 
-The initial renderer performs complete painting and a complete buffer scan.
-This is acceptable for ordinary terminal dimensions and provides the reference
-output for later optimizations.
+The renderer performs complete painting and a complete buffer scan. UI
+preparation may reuse committed whole-frame geometry when reconciliation proves
+that no layout-affecting change occurred; `UiTree::prepare_full` always computes
+layout and provides the reference output for optimized preparation.
 
 ## Frame Patch
 
@@ -285,7 +286,7 @@ Optimizations should be considered in this order:
 3. Reduce bytes with correct cell-run diffing.
 4. Cache text measurement.
 5. Reuse buffers and grapheme allocations.
-6. Skip clean layout subtrees.
+6. Reuse clean whole-frame geometry, then skip clean layout subtrees.
 7. Skip clean paint subtrees.
 8. Restrict diff scanning to damaged rows or regions.
 

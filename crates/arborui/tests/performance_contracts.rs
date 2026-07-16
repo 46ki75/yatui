@@ -1,6 +1,6 @@
 //! Deterministic output-shape contracts that complement timing benchmarks.
 
-use arborui::{CursorState, Point, Size, Style, WidthPolicy, render::Renderer};
+use arborui::{CursorState, Element, Point, Size, Style, UiTree, WidthPolicy, render::Renderer};
 
 #[test]
 fn full_repaint_has_one_complete_run_per_row() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,5 +35,18 @@ fn one_cell_change_emits_one_cell() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!frame.patch().full_repaint);
     assert_eq!(frame.patch().runs.len(), 1);
     assert_eq!(frame.patch().runs[0].cells.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn full_layout_reference_is_available_through_facade() -> Result<(), Box<dyn std::error::Error>> {
+    let size = Size::new(8, 1);
+    let tree = UiTree::new();
+    let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+    let view = Element::<()>::text("reference");
+
+    let frame = tree.prepare_full(&view, size, &mut renderer)?;
+
+    assert_eq!(frame.buffer().size(), size);
     Ok(())
 }

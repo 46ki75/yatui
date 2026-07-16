@@ -234,8 +234,9 @@ item count. All tracked live allocations return to zero after dropping each
 measured result.
 
 At 100,000 fixed-height items, Page Down allocates and retains 122,177/44,884
-bytes in ArborUI and 0/0 in Ratatui. Unchanged redraw allocates and retains
-101,873/39,892 bytes in ArborUI and 0/0 in Ratatui. Resize is
+bytes in ArborUI and 0/0 in Ratatui. After retained-layout reuse, unchanged
+redraw allocates and retains 56,789/39,892 bytes in ArborUI and 0/0 in Ratatui.
+Resize is
 302,653/123,428 versus 165,888/165,888 bytes, while reverse is
 2,520,281/2,444,860 versus 2,400,008/2,400,008 bytes. Variable-height results
 show the same shape. These are operation-local allocations; fixture allocations
@@ -245,14 +246,19 @@ Opt-in ArborUI instrumentation now separates application view construction,
 staged reconciliation, layout, paint, diff, commit, post-commit refresh, and
 combined terminal validation/serialization/write. Existing untimed methods do
 not read the clock, and the transactional write-before-commit ordering is
-unchanged. In the 100-sample headless comparison, fixed Page Down averages 25.0
-microseconds in layout, 34.4 microseconds in paint, 4.4 microseconds in diff,
-and 76.0 microseconds for the complete timed render. Fixed unchanged redraw is
-22.6, 33.3, 2.1, and 69.7 microseconds respectively. Variable Page Down is
-36.8, 39.2, 5.5, and 92.8 microseconds. Reverse update remains dominant at
-689-807 microseconds before its 93-132 microsecond render. Ratatui does not
-expose equivalent internal boundaries, so only its complete-turn timings are
-compared.
+unchanged. In the 100-sample headless comparison, fixed selection and unchanged
+redraw now spend zero measured time in layout and complete in 54.9 and 45.7
+microseconds, down from 75.7 and 69.7. Variable selection and unchanged redraw
+complete in 56.9 and 56.0 microseconds, down from 83.7 and 101.0. Layout-required
+Page Down, resize, and reverse turns continue through complete layout. Ratatui
+does not expose equivalent internal boundaries, so only its complete-turn
+timings are compared.
+
+`UiTree::prepare_full` preserves a separately callable complete-layout reference.
+The incremental path is checked against it across hand-selected and deterministic
+generated transitions, comparing patches, complete buffers, hit maps, retained
+geometry, and committed renderer state. This evidence also exposed and fixed a
+latent keyed-child reorder invalidation gap that complete layout had masked.
 
 The widget unit tests independently verify checkbox activation and that a dialog
 owns focus, handles Escape, and replaces lower pointer targets.
@@ -345,8 +351,9 @@ requirements open:
 - Integration with a real service, subprocess, or async executor rather than the
   demonstration thread producer
 
-The next performance work should use the measured layout and paint costs to
-select a narrow optimization experiment, then verify it against full-render and
-transactional correctness contracts. Select and table requirements can extend
-the pilot separately without treating this local collection experiment as a
-stabilized widget API.
+The first measured optimization reuses retained whole-frame geometry when
+reconciliation proves that no layout-affecting change occurred. Paint remains
+the largest phase for those turns, so the next narrow experiment should address
+paint work without weakening full-reference or transactional correctness
+contracts. Select and table requirements can extend the pilot separately without
+treating this local collection experiment as a stabilized widget API.

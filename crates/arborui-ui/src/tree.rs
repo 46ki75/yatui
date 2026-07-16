@@ -11,7 +11,7 @@ use arborui_render::{
     Buffer, Canvas, CommitError, DrawError, FramePatch, HitId, HitMap, PreparedFrame, RenderError,
     Renderer, RendererStateId,
 };
-use arborui_text::measure;
+use arborui_text::{WidthPolicy, measure};
 
 use crate::{
     DispatchOutcome, Element, EventContext, EventPhase, FocusChange, FocusError, Invalidation, Key,
@@ -112,6 +112,7 @@ pub struct UiTree {
     next_id: u64,
     pending: Invalidation,
     viewport: Option<Size>,
+    width_policy: Option<WidthPolicy>,
     focus: FocusManager,
     captured_pointer: Option<NodeId>,
     suppressed_pointer_buttons: u8,
@@ -577,16 +578,41 @@ impl UiTree {
         Ok(report)
     }
 
-    /// Reconciles, lays out, and paints a complete headless frame.
+    /// Reconciles and paints a complete headless frame, reusing committed
+    /// geometry when no layout-affecting change is found.
     pub fn prepare<Message>(
         &self,
         element: &Element<'_, Message>,
         viewport: Size,
         renderer: &mut Renderer,
     ) -> Result<PreparedUiFrame, UiError> {
+        self.prepare_with_layout_mode(element, viewport, renderer, false)
+    }
+
+    /// Reconciles, fully lays out, and paints a headless reference frame.
+    ///
+    /// Unlike [`prepare`](Self::prepare), this path always recomputes layout so
+    /// optimized preparation can be checked against a full-layout reference.
+    pub fn prepare_full<Message>(
+        &self,
+        element: &Element<'_, Message>,
+        viewport: Size,
+        renderer: &mut Renderer,
+    ) -> Result<PreparedUiFrame, UiError> {
+        self.prepare_with_layout_mode(element, viewport, renderer, true)
+    }
+
+    fn prepare_with_layout_mode<Message>(
+        &self,
+        element: &Element<'_, Message>,
+        viewport: Size,
+        renderer: &mut Renderer,
+        force_layout: bool,
+    ) -> Result<PreparedUiFrame, UiError> {
         let mut staged = self.clone_for_staging();
-        staged.stage_frame(element, viewport)?;
-        let layout = staged.layout_frame(element, viewport, renderer.width_policy())?;
+        let width_policy = renderer.width_policy();
+        staged.stage_frame(element, viewport, width_policy)?;
+        let layout = staged.prepare_frame_layout(element, viewport, width_policy, force_layout)?;
         let frame = renderer.prepare(viewport, layout.cursor, |canvas| {
             staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
         })?;
@@ -599,8 +625,8 @@ impl UiTree {
         })
     }
 
-    /// Reconciles, lays out, and paints a complete headless frame while
-    /// measuring each preparation phase.
+    /// Reconciles and paints a complete headless frame while measuring each
+    /// preparation phase and reusing clean committed geometry.
     pub fn prepare_timed<Message>(
         &self,
         element: &Element<'_, Message>,
@@ -609,12 +635,20 @@ impl UiTree {
     ) -> Result<(PreparedUiFrame, UiPreparationTimings), UiError> {
         let staging_started = Instant::now();
         let mut staged = self.clone_for_staging();
-        staged.stage_frame(element, viewport)?;
+        let width_policy = renderer.width_policy();
+        staged.stage_frame(element, viewport, width_policy)?;
         let staging_reconciliation = staging_started.elapsed();
 
-        let layout_started = Instant::now();
-        let layout = staged.layout_frame(element, viewport, renderer.width_policy())?;
-        let layout_elapsed = layout_started.elapsed();
+        let (layout, layout_elapsed) = if staged.pending >= Invalidation::Layout {
+            let layout_started = Instant::now();
+            let layout = staged.layout_frame(element, viewport, width_policy)?;
+            (layout, layout_started.elapsed())
+        } else {
+            (
+                staged.resolve_frame_layout(element, viewport, width_policy),
+                Duration::ZERO,
+            )
+        };
 
         let (frame, renderer_timings) =
             renderer.prepare_timed(viewport, layout.cursor, |canvas| {
@@ -646,6 +680,7 @@ impl UiTree {
             next_id: self.next_id,
             pending: self.pending,
             viewport: self.viewport,
+            width_policy: self.width_policy,
             focus: self.focus.clone(),
             captured_pointer: self.captured_pointer,
             suppressed_pointer_buttons: self.suppressed_pointer_buttons,
@@ -661,20 +696,39 @@ impl UiTree {
         &mut self,
         element: &Element<'_, Message>,
         viewport: Size,
+        width_policy: WidthPolicy,
     ) -> Result<(), UiError> {
         self.reconcile(element)?;
         if self.viewport != Some(viewport) {
             self.pending.request(Invalidation::Layout);
             self.viewport = Some(viewport);
         }
+        if self.width_policy != Some(width_policy) {
+            self.pending.request(Invalidation::Layout);
+            self.width_policy = Some(width_policy);
+        }
         Ok(())
+    }
+
+    fn prepare_frame_layout<Message>(
+        &mut self,
+        element: &Element<'_, Message>,
+        viewport: Size,
+        width_policy: WidthPolicy,
+        force_layout: bool,
+    ) -> Result<FrameLayout, UiError> {
+        if force_layout || self.pending >= Invalidation::Layout {
+            self.layout_frame(element, viewport, width_policy)
+        } else {
+            Ok(self.resolve_frame_layout(element, viewport, width_policy))
+        }
     }
 
     fn layout_frame<Message>(
         &mut self,
         element: &Element<'_, Message>,
         viewport: Size,
-        width_policy: arborui_text::WidthPolicy,
+        width_policy: WidthPolicy,
     ) -> Result<FrameLayout, UiError> {
         let root = self.root.expect("reconciliation always creates a root");
         let mut layout_tree = LayoutTree::new();
@@ -710,23 +764,31 @@ impl UiTree {
             width_policy,
         )?;
 
+        Ok(self.resolve_frame_layout(element, viewport, width_policy))
+    }
+
+    fn resolve_frame_layout<Message>(
+        &mut self,
+        element: &Element<'_, Message>,
+        viewport: Size,
+        width_policy: WidthPolicy,
+    ) -> FrameLayout {
+        let root = self.root.expect("reconciliation always creates a root");
         let focus_change = self.focus.sync(&self.nodes, self.root, self.viewport);
         self.record_focus_change(focus_change);
         let focus_change = self.focus.repair(&self.nodes, self.root, self.viewport);
         self.record_focus_change(focus_change);
         self.repair_removed_interaction();
         self.repair_pointer_modality();
-        let by_retained = mapping
-            .iter()
-            .map(|(_, retained, element)| (*retained, *element))
-            .collect::<HashMap<_, _>>();
+        let mut by_retained = HashMap::with_capacity(self.nodes.len());
+        self.collect_elements(root, element, &mut by_retained);
         let cursor = self.resolve_cursor(&by_retained, viewport, width_policy);
         let focused = self.focused();
-        Ok(FrameLayout {
+        FrameLayout {
             root,
             cursor,
             focused,
-        })
+        }
     }
 
     fn paint_frame<Message>(
@@ -869,10 +931,15 @@ impl UiTree {
                 self.remove_subtree(old, report);
             }
         }
-        self.nodes
+        let retained = self
+            .nodes
             .get_mut(&node_id)
-            .expect("reconciled node exists")
-            .children = new_children;
+            .expect("reconciled node exists");
+        if retained.children != new_children {
+            retained.invalidation.request(Invalidation::Recompose);
+            self.pending.request(Invalidation::Recompose);
+        }
+        retained.children = new_children;
         node_id
     }
 
@@ -962,7 +1029,7 @@ impl UiTree {
         tree: &LayoutTree,
         mapping: &HashMap<NodeId, LayoutNodeId>,
         offset: Point,
-        width_policy: arborui_text::WidthPolicy,
+        width_policy: WidthPolicy,
     ) -> Result<(), LayoutError> {
         let layout = tree.layout(mapping[&retained])?;
         let bounds = layout.bounds.translated(offset.x, offset.y);
@@ -1047,7 +1114,7 @@ impl UiTree {
         &self,
         elements: &HashMap<NodeId, &Element<'_, Message>>,
         viewport: Size,
-        width_policy: arborui_text::WidthPolicy,
+        width_policy: WidthPolicy,
     ) -> CursorState {
         let Some(focused) = self.focused() else {
             return CursorState::HIDDEN;
@@ -1418,6 +1485,47 @@ mod tests {
         Ok(())
     }
 
+    fn compare_incremental_and_reference<Message>(
+        incremental_tree: &mut UiTree,
+        reference_tree: &mut UiTree,
+        view: &Element<'_, Message>,
+        size: Size,
+        incremental_renderer: &mut Renderer,
+        reference_renderer: &mut Renderer,
+        expect_layout: Option<bool>,
+    ) -> Result<(), UiError> {
+        let (incremental, timings) =
+            incremental_tree.prepare_timed(view, size, incremental_renderer)?;
+        let reference = reference_tree.prepare_full(view, size, reference_renderer)?;
+
+        if let Some(expect_layout) = expect_layout {
+            assert_eq!(timings.layout == Duration::ZERO, !expect_layout);
+        }
+        assert_eq!(incremental.patch(), reference.patch());
+        assert_eq!(incremental.buffer(), reference.buffer());
+        assert_eq!(incremental.hit_map(), reference.hit_map());
+        assert_eq!(incremental.tree.root, reference.tree.root);
+        assert_eq!(incremental.tree.nodes.len(), reference.tree.nodes.len());
+        for (id, incremental_node) in &incremental.tree.nodes {
+            let reference_node = reference.tree.nodes.get(id).expect("matching node exists");
+            assert_eq!(incremental_node.key, reference_node.key);
+            assert_eq!(incremental_node.kind, reference_node.kind);
+            assert_eq!(incremental_node.children, reference_node.children);
+            assert_eq!(incremental_node.layout, reference_node.layout);
+            assert_eq!(incremental_node.content, reference_node.content);
+        }
+
+        incremental_tree
+            .commit(incremental, incremental_renderer)
+            .expect("incremental frame commits");
+        reference_tree
+            .commit(reference, reference_renderer)
+            .expect("reference frame commits");
+        assert_eq!(incremental_renderer.current(), reference_renderer.current());
+        assert_eq!(incremental_renderer.hit_map(), reference_renderer.hit_map());
+        Ok(())
+    }
+
     fn pointer_message(
         message: &'static str,
     ) -> impl Fn(&UiEvent, &mut EventContext<'_, &'static str>) {
@@ -1443,6 +1551,7 @@ mod tests {
         assert_eq!(reordered, &[original[1], original[0]]);
         assert_eq!(report.created, 0);
         assert_eq!(report.removed, 0);
+        assert_eq!(report.invalidation, Invalidation::Recompose);
         Ok(())
     }
 
@@ -1542,6 +1651,169 @@ mod tests {
                 .expect("committed root exists")
                 .layout()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn incremental_preparation_matches_full_reference_across_transitions() -> Result<(), UiError> {
+        let size = Size::new(12, 3);
+        let mut incremental_tree = UiTree::new();
+        let mut reference_tree = UiTree::new();
+        let mut incremental_renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let mut reference_renderer = Renderer::new(size, WidthPolicy::Unicode);
+
+        let initial = Element::<()>::container([
+            Element::text("label").key(1_u64).interactive(true),
+            Element::text("界").key(2_u64),
+        ]);
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &initial,
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(true),
+        )?;
+
+        let paint_only = Element::<()>::container([
+            Element::text("label")
+                .key(1_u64)
+                .interactive(true)
+                .style(Style::new().foreground(Color::Blue)),
+            Element::text("界").key(2_u64),
+        ]);
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &paint_only,
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(false),
+        )?;
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &paint_only,
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(false),
+        )?;
+
+        let text_changed = Element::<()>::container([
+            Element::text("long label")
+                .key(1_u64)
+                .interactive(true)
+                .style(Style::new().foreground(Color::Blue)),
+            Element::text("界").key(2_u64),
+        ]);
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &text_changed,
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(true),
+        )?;
+
+        let translated = Element::<()>::container([
+            Element::text("long label")
+                .key(1_u64)
+                .interactive(true)
+                .style(Style::new().foreground(Color::Blue)),
+            Element::text("界").key(2_u64),
+        ])
+        .child_offset(Point::new(1, 0));
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &translated,
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(true),
+        )?;
+
+        let reordered = Element::<()>::container([
+            Element::text("界").key(2_u64),
+            Element::text("long label")
+                .key(1_u64)
+                .interactive(true)
+                .style(Style::new().foreground(Color::Blue)),
+        ])
+        .child_offset(Point::new(1, 0));
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &reordered,
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(true),
+        )?;
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &reordered,
+            Size::new(8, 2),
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(true),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn generated_incremental_frames_match_full_reference() -> Result<(), UiError> {
+        const LABELS: [&str; 4] = ["a", "wide label", "界", "e\u{301}"];
+        let initial_size = Size::new(12, 3);
+        let mut incremental_tree = UiTree::new();
+        let mut reference_tree = UiTree::new();
+        let mut incremental_renderer = Renderer::new(initial_size, WidthPolicy::Unicode);
+        let mut reference_renderer = Renderer::new(initial_size, WidthPolicy::Unicode);
+        let mut state = 0x9e37_79b9_u32;
+
+        for _ in 0..64 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let first_label = LABELS[(state as usize) & 3];
+            let second_label = LABELS[((state >> 2) as usize) & 3];
+            let first = Element::text(first_label)
+                .key(1_u64)
+                .interactive(true)
+                .style(Style::new().foreground(if state & 0x10 == 0 {
+                    Color::Blue
+                } else {
+                    Color::BrightGreen
+                }));
+            let second = Element::text(second_label).key(2_u64);
+            let children = if state & 0x20 == 0 {
+                [first, second]
+            } else {
+                [second, first]
+            };
+            let view = Element::<()>::container(children).child_offset(Point::new(
+                ((state >> 6) & 1) as i32,
+                ((state >> 7) & 1) as i32,
+            ));
+            let size = Size::new(
+                8 + ((state >> 8) & 7) as u16,
+                2 + ((state >> 11) & 1) as u16,
+            );
+            compare_incremental_and_reference(
+                &mut incremental_tree,
+                &mut reference_tree,
+                &view,
+                size,
+                &mut incremental_renderer,
+                &mut reference_renderer,
+                None,
+            )?;
+        }
         Ok(())
     }
 

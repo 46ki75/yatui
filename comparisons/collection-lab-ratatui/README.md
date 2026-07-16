@@ -69,20 +69,20 @@ respective test backend.
 
 | Rows | Mode | ArborUI | Ratatui |
 | ---: | --- | ---: | ---: |
-| 1,000 | Fixed | 83.9 us | 9.50 us |
-| 100,000 | Fixed | 82.1 us | 9.53 us |
-| 1,000,000 | Fixed | 80.5 us | 12.4 us |
-| 1,000 | Variable | 95.2 us | 11.8 us |
-| 100,000 | Variable | 94.9 us | 11.2 us |
-| 1,000,000 | Variable | 93.3 us | 11.4 us |
+| 1,000 | Fixed | 53.7 us | 9.44 us |
+| 100,000 | Fixed | 56.3 us | 9.35 us |
+| 1,000,000 | Fixed | 56.3 us | 9.45 us |
+| 1,000 | Variable | 63.1 us | 11.4 us |
+| 100,000 | Variable | 64.0 us | 11.8 us |
+| 1,000,000 | Variable | 64.5 us | 11.8 us |
 
-The million-row fixed Ratatui sample had substantial outliers and a wide
-11.3-13.6 us confidence interval. Both implementations remain approximately
-flat as logical row count grows, which is the primary virtualization finding.
-The latency difference is not an isolated renderer comparison: ArborUI includes
-runtime settlement, retained reconciliation, layout, hit geometry, and cloned
-test patches, while the Ratatui application directly updates and redraws its
-immediate buffer.
+Both implementations remain approximately flat as logical row count grows,
+which is the primary virtualization finding. The latency difference is not an
+isolated renderer comparison: ArborUI includes runtime settlement, retained
+reconciliation, hit geometry, and cloned test patches, while the Ratatui
+application directly updates and redraws its immediate buffer. ArborUI reuses
+retained geometry when reconciliation proves a line-navigation turn has no
+layout-affecting change.
 
 ## Expanded Local Result
 
@@ -92,18 +92,19 @@ other rows exclude untimed baseline resets.
 
 | Scenario | ArborUI fixed | Ratatui fixed | ArborUI variable | Ratatui variable |
 | --- | ---: | ---: | ---: | ---: |
-| Cold initial render | 20.6 ms | 28.7 ms | 19.5 ms | 24.0 ms |
-| Page Down | 118 us | 14.0 us | 143 us | 12.1 us |
-| End | 97.7 us | 10.5 us | 103 us | 13.0 us |
-| Resize 48x12 to 48x16 | 142 us | 20.0 us | 143 us | 22.9 us |
-| Selection | 80.1 us | 9.49 us | 91.4 us | 11.8 us |
-| Reverse | 817 us | 755 us | 839 us | 780 us |
-| Unchanged redraw | 78.8 us | 8.60 us | 87.9 us | 11.7 us |
+| Cold initial render | 16.7 ms | 16.1 ms | 17.0 ms | 16.3 ms |
+| Page Down | 84.8 us | 9.65 us | 92.3 us | 11.5 us |
+| End | 86.2 us | 9.99 us | 95.8 us | 12.3 us |
+| Resize 48x12 to 48x16 | 125 us | 19.4 us | 143 us | 21.6 us |
+| Selection | 55.9 us | 9.50 us | 63.2 us | 11.6 us |
+| Reverse | 852 us | 740 us | 858 us | 720 us |
+| Unchanged redraw | 51.5 us | 8.47 us | 57.4 us | 10.2 us |
 
-Cold initial render and fixed Page Down had wide intervals and substantial
-outliers. Reverse is primarily the shared O(n) application policy: reversing
-100,000 items and rebuilding providers. The other cases retain the same
-framework-level work differences described above.
+Reverse is primarily the shared O(n) application policy: reversing 100,000
+items and rebuilding providers. Criterion measured selection improvements of
+30.4% fixed and 31.7% variable, and unchanged-redraw improvements of 33.7% fixed
+and 34.4% variable, against the preceding full-layout baseline. Reverse had no
+significant fixed-mode change and remained application dominated.
 
 The production serializer probe reports `bytes/writer calls/flushes`:
 
@@ -155,7 +156,7 @@ are constructed before profiling.
 | Page Down | 122,177/44,884 | 0/0 | 106,354/42,772 | 0/0 |
 | Resize | 302,653/123,428 | 165,888/165,888 | 267,462/118,988 | 165,888/165,888 |
 | Reverse | 2,520,281/2,444,860 | 2,400,008/2,400,008 | 2,498,714/2,440,700 | 2,400,008/2,400,008 |
-| Unchanged redraw | 101,873/39,892 | 0/0 | 78,978/35,492 | 0/0 |
+| Unchanged redraw | 56,789/39,892 | 0/0 | 48,030/35,492 | 0/0 |
 
 ## ArborUI Phase Attribution
 
@@ -168,22 +169,27 @@ below in nanoseconds, while `comparison-phase-metrics` prints every phase.
 
 | Mode | Scenario | Update | Stage/reconcile | Layout | Paint | Diff | Render total |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Fixed | Initial render | 0 | 13,140 | 53,427 | 47,233 | 24,832 | 159,096 |
-| Fixed | Page Down | 418 | 3,834 | 25,047 | 34,439 | 4,365 | 75,990 |
-| Fixed | End | 638 | 3,809 | 24,080 | 34,668 | 5,407 | 78,242 |
-| Fixed | Resize | 2,319 | 3,830 | 26,879 | 41,185 | 15,141 | 98,014 |
-| Fixed | Selection | 409 | 3,739 | 24,904 | 34,258 | 4,272 | 75,719 |
-| Fixed | Reverse | 689,174 | 7,194 | 30,239 | 37,569 | 5,402 | 92,629 |
-| Fixed | Unchanged redraw | 414 | 3,612 | 22,557 | 33,279 | 2,100 | 69,743 |
-| Variable | Initial render | 0 | 12,062 | 54,826 | 55,012 | 13,338 | 157,143 |
-| Variable | Page Down | 441 | 2,922 | 36,796 | 39,219 | 5,461 | 92,809 |
-| Variable | End | 763 | 3,186 | 28,148 | 42,849 | 5,447 | 88,496 |
-| Variable | Resize | 1,959 | 3,847 | 32,739 | 51,679 | 15,890 | 115,668 |
-| Variable | Selection | 456 | 2,933 | 27,152 | 39,917 | 5,316 | 83,700 |
-| Variable | Reverse | 807,145 | 9,328 | 44,099 | 53,865 | 8,053 | 132,019 |
-| Variable | Unchanged redraw | 581 | 3,726 | 34,163 | 50,324 | 2,928 | 100,991 |
+| Fixed | Initial render | 0 | 12,694 | 50,007 | 44,964 | 29,648 | 158,607 |
+| Fixed | Page Down | 410 | 4,427 | 28,177 | 36,279 | 4,427 | 85,076 |
+| Fixed | End | 644 | 3,875 | 23,268 | 35,091 | 5,743 | 76,976 |
+| Fixed | Resize | 2,331 | 4,194 | 31,160 | 47,026 | 15,688 | 109,936 |
+| Fixed | Selection | 369 | 3,326 | 0 | 39,023 | 3,854 | 54,926 |
+| Fixed | Reverse | 724,113 | 6,517 | 31,444 | 39,838 | 5,346 | 94,944 |
+| Fixed | Unchanged redraw | 320 | 3,269 | 0 | 32,343 | 2,120 | 45,700 |
+| Variable | Initial render | 0 | 11,189 | 55,636 | 57,825 | 13,724 | 156,942 |
+| Variable | Page Down | 456 | 3,125 | 30,555 | 42,110 | 5,899 | 91,884 |
+| Variable | End | 1,284 | 3,958 | 29,400 | 46,280 | 6,073 | 95,328 |
+| Variable | Resize | 1,789 | 3,216 | 33,110 | 51,249 | 16,407 | 115,722 |
+| Variable | Selection | 454 | 2,829 | 0 | 41,139 | 4,742 | 56,922 |
+| Variable | Reverse | 688,731 | 6,425 | 32,895 | 45,592 | 6,343 | 103,399 |
+| Variable | Unchanged redraw | 409 | 2,949 | 0 | 41,492 | 2,433 | 55,966 |
 
-Paint and layout are the largest steady render phases in this application.
-Reverse remains dominated by the application-owned O(n) update. Ratatui's
-internal phase boundaries are not exposed, so its comparison remains the
-complete-turn Criterion result rather than a fabricated phase split.
+Ordinary preparation now skips layout when reconciliation reports only paint or
+no changes, while `UiTree::prepare_full` remains a separately callable reference
+path. Hand-selected and deterministic generated transitions compare complete
+buffers, patches, hit maps, retained geometry, and committed renderer state.
+Selection and unchanged redraw therefore report zero layout time; paint is now
+their largest measured phase. Reverse remains dominated by the application-owned
+O(n) update. Ratatui's internal phase boundaries are not exposed, so its
+comparison remains the complete-turn Criterion result rather than a fabricated
+phase split.
