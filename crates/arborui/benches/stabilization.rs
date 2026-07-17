@@ -1,9 +1,12 @@
 #![allow(missing_docs)]
-//! Stable public-path benchmarks for text measurement and frame preparation.
+//! Stable public-path benchmarks for text, frame, and UI layout work.
 
-use std::hint::black_box;
+use std::{hint::black_box, time::Duration};
 
-use arborui::{CursorState, Point, Size, Style, WidthPolicy, measure, render::Renderer};
+use arborui::{
+    CursorState, Dimension, Element, Invalidation, LayoutStyle, Point, Size, Style, UiTree,
+    WidthPolicy, layout::FlexDirection, measure, render::Renderer,
+};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 fn text_measurement(criterion: &mut Criterion) {
@@ -83,5 +86,91 @@ fn initialized_renderer(size: Size) -> Renderer {
     renderer
 }
 
-criterion_group!(benches, text_measurement, render_preparation);
+fn repeated_layout(criterion: &mut Criterion) {
+    const VIEWPORT: Size = Size::new(120, 40);
+    let mut phase_group = criterion.benchmark_group("ui/repeated_layout_phase");
+    for (depth, node_count) in [(5, 63_u64), (8, 511), (11, 4_095)] {
+        phase_group.throughput(Throughput::Elements(node_count));
+        phase_group.bench_with_input(
+            BenchmarkId::new("balanced", node_count),
+            &depth,
+            |bencher, depth| {
+                let view = balanced_layout_tree(*depth);
+                let (mut tree, mut renderer, root) = initialized_ui(&view, VIEWPORT);
+                bencher.iter_custom(|iterations| {
+                    let mut layout = Duration::ZERO;
+                    for _ in 0..iterations {
+                        assert!(tree.invalidate(root, Invalidation::Layout));
+                        let (prepared, timings) = tree
+                            .prepare_timed(&view, VIEWPORT, &mut renderer)
+                            .expect("benchmark frame must prepare");
+                        layout = layout.saturating_add(black_box(timings.layout));
+                        tree.commit(prepared, &mut renderer)
+                            .expect("benchmark frame must commit");
+                    }
+                    layout
+                });
+            },
+        );
+    }
+    phase_group.finish();
+
+    let mut turn_group = criterion.benchmark_group("ui/repeated_layout_turn");
+    for (depth, node_count) in [(5, 63_u64), (8, 511), (11, 4_095)] {
+        turn_group.throughput(Throughput::Elements(node_count));
+        turn_group.bench_with_input(
+            BenchmarkId::new("balanced", node_count),
+            &depth,
+            |bencher, depth| {
+                let view = balanced_layout_tree(*depth);
+                let (mut tree, mut renderer, root) = initialized_ui(&view, VIEWPORT);
+                bencher.iter(|| {
+                    assert!(tree.invalidate(root, Invalidation::Layout));
+                    let prepared = tree
+                        .prepare(&view, VIEWPORT, &mut renderer)
+                        .expect("benchmark frame must prepare");
+                    tree.commit(prepared, &mut renderer)
+                        .expect("benchmark frame must commit");
+                    black_box(renderer.current().size());
+                });
+            },
+        );
+    }
+    turn_group.finish();
+}
+
+fn balanced_layout_tree(depth: u32) -> Element<'static, ()> {
+    if depth == 0 {
+        return Element::container([])
+            .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1)));
+    }
+    Element::container([
+        balanced_layout_tree(depth - 1),
+        balanced_layout_tree(depth - 1),
+    ])
+    .layout(LayoutStyle::new().direction(if depth & 1 == 0 {
+        FlexDirection::Row
+    } else {
+        FlexDirection::Column
+    }))
+}
+
+fn initialized_ui(view: &Element<'_, ()>, size: Size) -> (UiTree, Renderer, arborui::NodeId) {
+    let mut tree = UiTree::new();
+    let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+    let prepared = tree
+        .prepare(view, size, &mut renderer)
+        .expect("initial benchmark frame must prepare");
+    tree.commit(prepared, &mut renderer)
+        .expect("initial benchmark frame must commit");
+    let root = tree.root().expect("benchmark tree must have a root");
+    (tree, renderer, root)
+}
+
+criterion_group!(
+    benches,
+    text_measurement,
+    render_preparation,
+    repeated_layout
+);
 criterion_main!(benches);
