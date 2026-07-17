@@ -1,5 +1,5 @@
 use arborui_core::{Point, Rect};
-use arborui_layout::LayoutStyle;
+use arborui_layout::{LayoutNodeId, LayoutStyle};
 
 use crate::{Invalidation, Key, WidgetKind};
 
@@ -34,6 +34,7 @@ pub struct RetainedNode {
     pub(crate) child_offset_fingerprint: u64,
     pub(crate) dynamic_child_offset: bool,
     pub(crate) fill_background: bool,
+    pub(crate) layout_node: LayoutNodeId,
 }
 
 impl RetainedNode {

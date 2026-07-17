@@ -121,6 +121,7 @@ pub struct UiTree {
     pending_focus_change: Option<FocusChange>,
     revision: u64,
     renderer_state: Option<RendererStateId>,
+    layout_tree: LayoutTree,
 }
 
 /// A rendered frame and the retained UI state that produced it.
@@ -374,11 +375,17 @@ impl UiTree {
 
     /// Requests work for one retained node and escalates the tree request.
     pub fn invalidate(&mut self, node: NodeId, requested: Invalidation) -> bool {
-        let Some(node) = self.nodes.get_mut(&node) else {
+        let Some(retained) = self.nodes.get_mut(&node) else {
             return false;
         };
-        node.invalidation.request(requested);
+        retained.invalidation.request(requested);
+        let layout_node = retained.layout_node;
         self.pending.request(requested);
+        if requested >= Invalidation::Layout {
+            self.layout_tree
+                .invalidate(layout_node)
+                .expect("retained layout node exists");
+        }
         self.bump_revision();
         true
     }
@@ -794,6 +801,7 @@ impl UiTree {
             pending_focus_change: self.pending_focus_change,
             revision: self.revision,
             renderer_state: self.renderer_state,
+            layout_tree: self.layout_tree.clone(),
         }
     }
 
@@ -811,6 +819,7 @@ impl UiTree {
         if self.width_policy != Some(width_policy) {
             self.pending.request(Invalidation::Layout);
             self.width_policy = Some(width_policy);
+            self.layout_tree.invalidate_all()?;
         }
         Ok(())
     }
@@ -823,6 +832,9 @@ impl UiTree {
         force_layout: bool,
     ) -> Result<FrameLayout, UiError> {
         if force_layout || self.pending >= Invalidation::Layout {
+            if force_layout {
+                self.layout_tree.invalidate_all()?;
+            }
             self.layout_frame(element, viewport, width_policy)
         } else {
             Ok(self.resolve_frame_layout(element, viewport, width_policy))
@@ -836,38 +848,24 @@ impl UiTree {
         width_policy: WidthPolicy,
     ) -> Result<FrameLayout, UiError> {
         let root = self.root.expect("reconciliation always creates a root");
-        let mut layout_tree = LayoutTree::new();
-        let mut mapping = Vec::with_capacity(self.nodes.len());
-        let layout_root = self.build_layout(root, element, &mut layout_tree, &mut mapping)?;
-        let by_layout = mapping
-            .iter()
-            .map(|(layout, _, element)| (*layout, *element))
-            .collect::<HashMap<_, _>>();
-        layout_tree.compute(layout_root, viewport, |node, input| {
-            let Some(element) = by_layout.get(&node) else {
-                return Size::ZERO;
-            };
-            let Some(text) = element.text_content() else {
-                return Size::ZERO;
-            };
-            let metrics = measure(text, width_policy);
-            Size::new(
-                input.known_width.unwrap_or(saturating_u16(metrics.width)),
-                input.known_height.unwrap_or(saturating_u16(metrics.height)),
-            )
-        })?;
-        let by_retained_layout = mapping
-            .iter()
-            .map(|(layout, retained, _)| (*retained, *layout))
-            .collect::<HashMap<_, _>>();
-        self.assign_layout(
-            root,
-            element,
-            &layout_tree,
-            &by_retained_layout,
-            Point::ORIGIN,
-            width_policy,
-        )?;
+        let layout_root = self.nodes[&root].layout_node;
+        let mut by_layout = HashMap::with_capacity(self.nodes.len());
+        self.collect_layout_elements(root, element, &mut by_layout);
+        self.layout_tree
+            .compute(layout_root, viewport, |node, input| {
+                let Some(element) = by_layout.get(&node) else {
+                    return Size::ZERO;
+                };
+                let Some(text) = element.text_content() else {
+                    return Size::ZERO;
+                };
+                let metrics = measure(text, width_policy);
+                Size::new(
+                    input.known_width.unwrap_or(saturating_u16(metrics.width)),
+                    input.known_height.unwrap_or(saturating_u16(metrics.height)),
+                )
+            })?;
+        self.assign_layout(root, element, Point::ORIGIN, width_policy)?;
 
         Ok(self.resolve_frame_layout(element, viewport, width_policy))
     }
@@ -1006,6 +1004,9 @@ impl UiTree {
 
         if compatible {
             let fingerprint = content_fingerprint(element);
+            let style_changed = self.nodes[&node_id].layout_style != element.layout_style();
+            let content_changed = self.nodes[&node_id].content_fingerprint != fingerprint;
+            let layout_node = self.nodes[&node_id].layout_node;
             let mut requested = Invalidation::None;
             {
                 let retained = self
@@ -1063,6 +1064,16 @@ impl UiTree {
                 retained.invalidation.request(requested);
             }
             self.pending.request(requested);
+            if style_changed {
+                self.layout_tree
+                    .set_style(layout_node, element.layout_style())
+                    .expect("retained layout node exists");
+            }
+            if content_changed {
+                self.layout_tree
+                    .invalidate(layout_node)
+                    .expect("retained layout node exists");
+            }
         }
 
         let old_children = self.nodes[&node_id].children.clone();
@@ -1091,15 +1102,27 @@ impl UiTree {
                 self.remove_subtree(old, report);
             }
         }
-        let retained = self
-            .nodes
-            .get_mut(&node_id)
-            .expect("reconciled node exists");
-        if retained.children != new_children {
-            retained.invalidation.request(Invalidation::Recompose);
+        let children_changed = self.nodes[&node_id].children != new_children;
+        if children_changed {
+            self.nodes
+                .get_mut(&node_id)
+                .expect("reconciled node exists")
+                .invalidation
+                .request(Invalidation::Recompose);
             self.pending.request(Invalidation::Recompose);
+            let parent = self.nodes[&node_id].layout_node;
+            let children = new_children
+                .iter()
+                .map(|child| self.nodes[child].layout_node)
+                .collect::<Vec<_>>();
+            self.layout_tree
+                .set_children(parent, &children)
+                .expect("retained layout structure is valid");
         }
-        retained.children = new_children;
+        self.nodes
+            .get_mut(&node_id)
+            .expect("reconciled node exists")
+            .children = new_children;
         node_id
     }
 
@@ -1110,6 +1133,7 @@ impl UiTree {
     ) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
+        let layout_node = self.layout_tree.add(element.layout_style());
         self.nodes.insert(
             id,
             RetainedNode {
@@ -1137,12 +1161,23 @@ impl UiTree {
                 dynamic_child_offset: element.has_dynamic_child_offset(),
                 fill_background: element.fills_background(),
                 paint_fingerprint: element.paint_fingerprint(),
+                layout_node,
             },
         );
         id
     }
 
     fn remove_subtree(&mut self, node: NodeId, report: &mut ReconcileReport) {
+        let Some(layout_node) = self.nodes.get(&node).map(|retained| retained.layout_node) else {
+            return;
+        };
+        self.layout_tree
+            .remove(layout_node)
+            .expect("retained layout node exists");
+        self.remove_retained_subtree(node, report);
+    }
+
+    fn remove_retained_subtree(&mut self, node: NodeId, report: &mut ReconcileReport) {
         let Some(retained) = self.nodes.remove(&node) else {
             return;
         };
@@ -1156,42 +1191,34 @@ impl UiTree {
             self.hovered = None;
         }
         for child in retained.children {
-            self.remove_subtree(child, report);
+            self.remove_retained_subtree(child, report);
         }
     }
 
-    fn build_layout<'a, Message>(
+    fn collect_layout_elements<'a, Message>(
         &self,
         retained: NodeId,
         element: &'a Element<'a, Message>,
-        tree: &mut LayoutTree,
-        mapping: &mut Vec<(LayoutNodeId, NodeId, &'a Element<'a, Message>)>,
-    ) -> Result<LayoutNodeId, LayoutError> {
+        mapping: &mut HashMap<LayoutNodeId, &'a Element<'a, Message>>,
+    ) {
         let retained_node = self
             .nodes
             .get(&retained)
             .expect("element and retained tree have matching structure");
-        let children = retained_node
-            .children
-            .iter()
-            .zip(element.children())
-            .map(|(child, element)| self.build_layout(*child, element, tree, mapping))
-            .collect::<Result<Vec<_>, _>>()?;
-        let layout = tree.add_with_children(element.layout_style(), &children)?;
-        mapping.push((layout, retained, element));
-        Ok(layout)
+        mapping.insert(retained_node.layout_node, element);
+        for (child, element) in retained_node.children.iter().zip(element.children()) {
+            self.collect_layout_elements(*child, element, mapping);
+        }
     }
 
     fn assign_layout<Message>(
         &mut self,
         retained: NodeId,
         element: &Element<'_, Message>,
-        tree: &LayoutTree,
-        mapping: &HashMap<NodeId, LayoutNodeId>,
         offset: Point,
         width_policy: WidthPolicy,
     ) -> Result<(), LayoutError> {
-        let layout = tree.layout(mapping[&retained])?;
+        let layout = self.layout_tree.layout(self.nodes[&retained].layout_node)?;
         let bounds = layout.bounds.translated(offset.x, offset.y);
         let content = layout.content.translated(offset.x, offset.y);
         let node = self
@@ -1204,7 +1231,7 @@ impl UiTree {
         let offset = offset.translated(child_offset.x, child_offset.y);
         let children = self.nodes[&retained].children.clone();
         for (child, child_element) in children.into_iter().zip(element.children()) {
-            self.assign_layout(child, child_element, tree, mapping, offset, width_policy)?;
+            self.assign_layout(child, child_element, offset, width_policy)?;
         }
         Ok(())
     }
@@ -2291,6 +2318,27 @@ mod tests {
             tree.dispatch(&changed, &UiEvent::Tick, &renderer),
             Err(ReconcileError::ViewDoesNotMatchCommittedTree)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn discarded_layout_changes_do_not_poison_the_next_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let initial = Element::<()>::container([Element::text("x")]);
+        let discarded = Element::<()>::container([Element::text("discarded")]);
+        let committed = Element::<()>::container([Element::text("next")]);
+        let size = Size::new(20, 1);
+        let mut tree = UiTree::new();
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        prepare_and_commit(&mut tree, &initial, size, &mut renderer)?;
+
+        let prepared = tree.prepare(&discarded, size, &mut renderer)?;
+        tree.discard(prepared, &mut renderer);
+        prepare_and_commit(&mut tree, &committed, size, &mut renderer)?;
+
+        let root = tree.root().expect("root exists");
+        let child = tree.node(root).expect("root exists").children()[0];
+        assert_eq!(tree.node(child).expect("child exists").layout().width, 4);
         Ok(())
     }
 

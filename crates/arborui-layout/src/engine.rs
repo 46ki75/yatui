@@ -11,131 +11,231 @@ use taffy::{
 
 use crate::{
     Align, AvailableSpace, ComputedLayout, Dimension, FlexDirection, Justify, LayoutError,
-    LayoutNodeId, LayoutStyle, MeasureInput, Position,
+    LayoutNodeId, LayoutStyle, MeasureInput, Position, tree::NodeStore,
 };
 
-pub(crate) struct EngineResult {
-    pub(crate) layouts: Vec<Option<ComputedLayout>>,
+#[derive(Clone, Debug)]
+pub(crate) struct Engine {
+    tree: TaffyTree<LayoutNodeId>,
+    backend_ids: Vec<Option<(LayoutNodeId, taffy::NodeId)>>,
+    effective_root: Option<(LayoutNodeId, LayoutStyle)>,
 }
 
-pub(crate) fn compute<F>(
-    styles: &[(LayoutStyle, Vec<LayoutNodeId>)],
-    root: LayoutNodeId,
-    viewport: Size,
-    mut measure: F,
-) -> Result<EngineResult, LayoutError>
-where
-    F: FnMut(LayoutNodeId, MeasureInput) -> Size,
-{
-    let mut tree = TaffyTree::with_capacity(styles.len());
-    tree.enable_rounding();
-    let mut backend_ids = vec![None; styles.len()];
-    build_node(&mut tree, styles, root, &mut backend_ids)?;
-    let backend_root = backend_ids[root.index()].ok_or(LayoutError::UnknownNode(root))?;
+impl Engine {
+    pub(crate) fn new() -> Self {
+        let mut tree = TaffyTree::new();
+        tree.enable_rounding();
+        Self {
+            tree,
+            backend_ids: Vec::new(),
+            effective_root: None,
+        }
+    }
 
-    tree.compute_layout_with_measure(
-        backend_root,
-        TaffySize {
-            width: TaffyAvailableSpace::Definite(f32::from(viewport.width)),
-            height: TaffyAvailableSpace::Definite(f32::from(viewport.height)),
-        },
-        |known, available, _, context, _| {
-            let Some(node) = context.copied() else {
-                return TaffySize::ZERO;
-            };
-            let measured = measure(
-                node,
-                MeasureInput {
-                    known_width: known.width.map(round_u16),
-                    known_height: known.height.map(round_u16),
-                    available_width: available_space(available.width),
-                    available_height: available_space(available.height),
-                },
-            );
-            TaffySize {
-                width: f32::from(measured.width),
-                height: f32::from(measured.height),
+    pub(crate) fn add(&mut self, node: LayoutNodeId, style: LayoutStyle) {
+        if self.backend_ids.len() <= node.index() {
+            self.backend_ids.resize(node.index() + 1, None);
+        }
+        let backend = self
+            .tree
+            .new_leaf_with_context(taffy_style(style), node)
+            .expect("adding a Taffy node to an in-memory tree cannot fail");
+        self.backend_ids[node.index()] = Some((node, backend));
+    }
+
+    pub(crate) fn set_style(
+        &mut self,
+        node: LayoutNodeId,
+        style: LayoutStyle,
+    ) -> Result<(), LayoutError> {
+        if let Some((root, canonical)) = &mut self.effective_root {
+            if *root == node {
+                *canonical = style;
             }
-        },
-    )
-    .map_err(engine_error)?;
-
-    let mut layouts = vec![None; styles.len()];
-    collect_layouts(&tree, styles, &backend_ids, root, (0.0, 0.0), &mut layouts)?;
-    Ok(EngineResult { layouts })
-}
-
-fn build_node(
-    tree: &mut TaffyTree<LayoutNodeId>,
-    nodes: &[(LayoutStyle, Vec<LayoutNodeId>)],
-    node: LayoutNodeId,
-    backend_ids: &mut [Option<taffy::NodeId>],
-) -> Result<taffy::NodeId, LayoutError> {
-    if let Some(id) = backend_ids.get(node.index()).copied().flatten() {
-        return Ok(id);
+        }
+        self.set_backend_style(node, style)
     }
-    let (style, children) = nodes
-        .get(node.index())
-        .ok_or(LayoutError::UnknownNode(node))?;
-    let backend = if children.is_empty() {
-        tree.new_leaf_with_context(taffy_style(*style), node)
-            .map_err(engine_error)?
-    } else {
-        let children = children
+
+    fn set_backend_style(
+        &mut self,
+        node: LayoutNodeId,
+        style: LayoutStyle,
+    ) -> Result<(), LayoutError> {
+        let backend = self.backend(node)?;
+        let style = taffy_style(style);
+        if self.tree.style(backend).map_err(engine_error)? != &style {
+            self.tree.set_style(backend, style).map_err(engine_error)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_children(
+        &mut self,
+        parent: LayoutNodeId,
+        children: &[LayoutNodeId],
+    ) -> Result<(), LayoutError> {
+        let backend_parent = self.backend(parent)?;
+        let backend_children = children
             .iter()
-            .map(|child| build_node(tree, nodes, *child, backend_ids))
+            .map(|child| self.backend(*child))
             .collect::<Result<Vec<_>, _>>()?;
-        tree.new_with_children(taffy_style(*style), &children)
-            .map_err(engine_error)?
-    };
-    backend_ids[node.index()] = Some(backend);
-    Ok(backend)
-}
-
-fn collect_layouts(
-    tree: &TaffyTree<LayoutNodeId>,
-    nodes: &[(LayoutStyle, Vec<LayoutNodeId>)],
-    backend_ids: &[Option<taffy::NodeId>],
-    node: LayoutNodeId,
-    parent_origin: (f32, f32),
-    output: &mut [Option<ComputedLayout>],
-) -> Result<(), LayoutError> {
-    let backend = backend_ids[node.index()].ok_or(LayoutError::UnknownNode(node))?;
-    let layout = tree.layout(backend).map_err(engine_error)?;
-    let unrounded_layout = tree.unrounded_layout(backend);
-    // Taffy's rounded sizes are cumulative edge differences; accumulate its
-    // parent-relative source locations before producing root coordinates.
-    let unrounded_origin = (
-        parent_origin.0 + unrounded_layout.location.x,
-        parent_origin.1 + unrounded_layout.location.y,
-    );
-    let origin = Point::new(round_i32(unrounded_origin.0), round_i32(unrounded_origin.1));
-    let bounds = Rect::from_origin_size(
-        origin,
-        Size::new(
-            integer_u16(layout.size.width),
-            integer_u16(layout.size.height),
-        ),
-    );
-    let border = insets(layout.border);
-    let padding = insets(layout.padding);
-    output[node.index()] = Some(ComputedLayout {
-        bounds,
-        content: bounds.inner(Insets::new(
-            border.top.saturating_add(padding.top),
-            border.right.saturating_add(padding.right),
-            border.bottom.saturating_add(padding.bottom),
-            border.left.saturating_add(padding.left),
-        )),
-        padding,
-        border,
-        order: layout.order,
-    });
-
-    for child in &nodes[node.index()].1 {
-        collect_layouts(tree, nodes, backend_ids, *child, unrounded_origin, output)?;
+        if self.tree.children(backend_parent).map_err(engine_error)? != backend_children {
+            self.tree
+                .set_children(backend_parent, &backend_children)
+                .map_err(engine_error)?;
+        }
+        Ok(())
     }
-    Ok(())
+
+    pub(crate) fn remove(&mut self, node: LayoutNodeId) {
+        let Some(slot) = self.backend_ids.get_mut(node.index()) else {
+            return;
+        };
+        let Some((mapped, backend)) = *slot else {
+            return;
+        };
+        if mapped != node {
+            return;
+        }
+        *slot = None;
+        if self.effective_root.is_some_and(|(root, _)| root == node) {
+            self.effective_root = None;
+        }
+        self.tree
+            .remove(backend)
+            .expect("removing a known Taffy node cannot fail");
+    }
+
+    pub(crate) fn invalidate(&mut self, node: LayoutNodeId) -> Result<(), LayoutError> {
+        let backend = self.backend(node)?;
+        self.tree.mark_dirty(backend).map_err(engine_error)
+    }
+
+    pub(crate) fn compute<F>(
+        &mut self,
+        nodes: &NodeStore,
+        root: LayoutNodeId,
+        viewport: Size,
+        mut measure: F,
+        layouts: &mut [Option<ComputedLayout>],
+    ) -> Result<(), LayoutError>
+    where
+        F: FnMut(LayoutNodeId, MeasureInput) -> Size,
+    {
+        self.prepare_root(nodes, root, viewport)?;
+        let backend_root = self.backend(root)?;
+        self.tree
+            .compute_layout_with_measure(
+                backend_root,
+                TaffySize {
+                    width: TaffyAvailableSpace::Definite(f32::from(viewport.width)),
+                    height: TaffyAvailableSpace::Definite(f32::from(viewport.height)),
+                },
+                |known, available, _, context, _| {
+                    let Some(node) = context.copied() else {
+                        return TaffySize::ZERO;
+                    };
+                    let measured = measure(
+                        node,
+                        MeasureInput {
+                            known_width: known.width.map(round_u16),
+                            known_height: known.height.map(round_u16),
+                            available_width: available_space(available.width),
+                            available_height: available_space(available.height),
+                        },
+                    );
+                    TaffySize {
+                        width: f32::from(measured.width),
+                        height: f32::from(measured.height),
+                    }
+                },
+            )
+            .map_err(engine_error)?;
+
+        layouts.fill(None);
+        self.collect_layouts(nodes, root, (0.0, 0.0), layouts)
+    }
+
+    fn prepare_root(
+        &mut self,
+        nodes: &NodeStore,
+        root: LayoutNodeId,
+        viewport: Size,
+    ) -> Result<(), LayoutError> {
+        if let Some((previous, style)) = self.effective_root {
+            if previous != root && nodes.get(previous).is_some() {
+                self.set_backend_style(previous, style)?;
+            }
+        }
+
+        let style = nodes.get(root).ok_or(LayoutError::UnknownNode(root))?.style;
+        let mut effective = style;
+        if effective.width == Dimension::Auto {
+            effective.width = Dimension::Cells(viewport.width);
+        }
+        if effective.height == Dimension::Auto {
+            effective.height = Dimension::Cells(viewport.height);
+        }
+        self.set_backend_style(root, effective)?;
+        self.effective_root = Some((root, style));
+        Ok(())
+    }
+
+    fn collect_layouts(
+        &self,
+        nodes: &NodeStore,
+        node: LayoutNodeId,
+        parent_origin: (f32, f32),
+        output: &mut [Option<ComputedLayout>],
+    ) -> Result<(), LayoutError> {
+        let backend = self.backend(node)?;
+        let layout = self.tree.layout(backend).map_err(engine_error)?;
+        let unrounded_layout = self.tree.unrounded_layout(backend);
+        // Taffy's rounded sizes are cumulative edge differences; accumulate its
+        // parent-relative source locations before producing root coordinates.
+        let unrounded_origin = (
+            parent_origin.0 + unrounded_layout.location.x,
+            parent_origin.1 + unrounded_layout.location.y,
+        );
+        let origin = Point::new(round_i32(unrounded_origin.0), round_i32(unrounded_origin.1));
+        let bounds = Rect::from_origin_size(
+            origin,
+            Size::new(
+                integer_u16(layout.size.width),
+                integer_u16(layout.size.height),
+            ),
+        );
+        let border = insets(layout.border);
+        let padding = insets(layout.padding);
+        output[node.index()] = Some(ComputedLayout {
+            bounds,
+            content: bounds.inner(Insets::new(
+                border.top.saturating_add(padding.top),
+                border.right.saturating_add(padding.right),
+                border.bottom.saturating_add(padding.bottom),
+                border.left.saturating_add(padding.left),
+            )),
+            padding,
+            border,
+            order: layout.order,
+        });
+
+        let retained = nodes.get(node).ok_or(LayoutError::UnknownNode(node))?;
+        for child in &retained.children {
+            self.collect_layouts(nodes, *child, unrounded_origin, output)?;
+        }
+        Ok(())
+    }
+
+    fn backend(&self, node: LayoutNodeId) -> Result<taffy::NodeId, LayoutError> {
+        self.backend_ids
+            .get(node.index())
+            .copied()
+            .flatten()
+            .filter(|(mapped, _)| *mapped == node)
+            .map(|(_, backend)| backend)
+            .ok_or(LayoutError::UnknownNode(node))
+    }
 }
 
 fn taffy_style(style: LayoutStyle) -> TaffyStyle {

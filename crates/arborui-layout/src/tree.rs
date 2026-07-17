@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arborui_core::{Insets, Rect, Size};
 
-use crate::{Dimension, LayoutStyle, MeasureInput, engine};
+use crate::{LayoutStyle, MeasureInput, engine};
 
 /// Stable, library-owned identity for a node in one layout tree.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -74,10 +74,10 @@ impl fmt::Display for LayoutError {
 impl std::error::Error for LayoutError {}
 
 #[derive(Clone, Debug)]
-struct Node {
-    style: LayoutStyle,
+pub(crate) struct Node {
+    pub(crate) style: LayoutStyle,
     parent: Option<LayoutNodeId>,
-    children: Vec<LayoutNodeId>,
+    pub(crate) children: Vec<LayoutNodeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,7 +87,7 @@ struct NodeSlot {
 }
 
 #[derive(Clone, Debug, Default)]
-struct NodeStore {
+pub(crate) struct NodeStore {
     slots: Vec<NodeSlot>,
     free: Vec<usize>,
     len: usize,
@@ -126,7 +126,7 @@ impl NodeStore {
         }
     }
 
-    fn get(&self, node: LayoutNodeId) -> Option<&Node> {
+    pub(crate) fn get(&self, node: LayoutNodeId) -> Option<&Node> {
         let slot = self.slots.get(node.index)?;
         (slot.generation == node.generation)
             .then_some(slot.node.as_ref())
@@ -166,6 +166,7 @@ pub struct LayoutTree {
     tree_id: u64,
     nodes: NodeStore,
     layouts: Vec<Option<ComputedLayout>>,
+    engine: Option<engine::Engine>,
 }
 
 impl LayoutTree {
@@ -176,6 +177,7 @@ impl LayoutTree {
             tree_id: 0,
             nodes: NodeStore::new(),
             layouts: Vec::new(),
+            engine: None,
         }
     }
 
@@ -197,6 +199,9 @@ impl LayoutTree {
         } else {
             self.layouts[id.index()] = None;
         }
+        self.engine
+            .get_or_insert_with(engine::Engine::new)
+            .add(id, style);
         id
     }
 
@@ -218,6 +223,7 @@ impl LayoutTree {
     /// Replaces a node's style.
     pub fn set_style(&mut self, node: LayoutNodeId, style: LayoutStyle) -> Result<(), LayoutError> {
         self.node_mut(node)?.style = style;
+        self.engine_mut()?.set_style(node, style)?;
         self.layouts.fill(None);
         Ok(())
     }
@@ -275,6 +281,7 @@ impl LayoutTree {
             self.node_mut(*child)?.parent = Some(parent);
         }
         self.node_mut(parent)?.children.extend_from_slice(children);
+        self.engine_mut()?.set_children(parent, children)?;
         for child in old_children {
             if self.node(child).is_ok_and(|node| node.parent.is_none()) {
                 self.remove_subtree(child);
@@ -302,25 +309,63 @@ impl LayoutTree {
         F: FnMut(LayoutNodeId, MeasureInput) -> Size,
     {
         self.node(root)?;
-        let mut nodes = self
+        self.layouts.resize(self.nodes.slots.len(), None);
+        let engine = self.engine.as_mut().ok_or(LayoutError::UnknownNode(root))?;
+        engine.compute(&self.nodes, root, viewport, measure, &mut self.layouts)?;
+        Ok(())
+    }
+
+    /// Invalidates cached intrinsic measurement for `node` and its ancestors.
+    pub fn invalidate(&mut self, node: LayoutNodeId) -> Result<(), LayoutError> {
+        self.node(node)?;
+        self.engine_mut()?.invalidate(node)?;
+        self.layouts.fill(None);
+        Ok(())
+    }
+
+    /// Invalidates all cached intrinsic measurements in the tree.
+    pub fn invalidate_all(&mut self) -> Result<(), LayoutError> {
+        if self.nodes.len == 0 {
+            self.layouts.fill(None);
+            return Ok(());
+        }
+        let nodes = self
             .nodes
             .slots
             .iter()
-            .map(|slot| {
-                slot.node.as_ref().map_or_else(
-                    || (LayoutStyle::default(), Vec::new()),
-                    |node| (node.style, node.children.clone()),
-                )
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                slot.node.as_ref().map(|_| LayoutNodeId {
+                    tree: self.tree_id,
+                    index,
+                    generation: slot.generation,
+                })
             })
             .collect::<Vec<_>>();
-        let root_style = &mut nodes[root.index()].0;
-        if root_style.width == Dimension::Auto {
-            root_style.width = Dimension::Cells(viewport.width);
+        let engine = self.engine_mut()?;
+        for node in nodes {
+            engine.invalidate(node)?;
         }
-        if root_style.height == Dimension::Auto {
-            root_style.height = Dimension::Cells(viewport.height);
+        self.layouts.fill(None);
+        Ok(())
+    }
+
+    /// Removes a node and its complete subtree.
+    pub fn remove(&mut self, node: LayoutNodeId) -> Result<(), LayoutError> {
+        let parent = self.node(node)?.parent;
+        if let Some(parent) = parent {
+            let children = self
+                .node(parent)?
+                .children
+                .iter()
+                .copied()
+                .filter(|child| *child != node)
+                .collect::<Vec<_>>();
+            self.node_mut(parent)?.children = children.clone();
+            self.engine_mut()?.set_children(parent, &children)?;
         }
-        self.layouts = engine::compute(&nodes, root, viewport, measure)?.layouts;
+        self.remove_subtree(node);
+        self.layouts.fill(None);
         Ok(())
     }
 
@@ -335,6 +380,7 @@ impl LayoutTree {
         self.tree_id = next_tree_id();
         self.nodes = NodeStore::new();
         self.layouts.clear();
+        self.engine = None;
     }
 
     fn node(&self, node: LayoutNodeId) -> Result<&Node, LayoutError> {
@@ -353,10 +399,19 @@ impl LayoutTree {
             .ok_or(LayoutError::UnknownNode(node))
     }
 
+    fn engine_mut(&mut self) -> Result<&mut engine::Engine, LayoutError> {
+        self.engine
+            .as_mut()
+            .ok_or_else(|| LayoutError::Engine("layout engine is not initialized".into()))
+    }
+
     fn remove_subtree(&mut self, node: LayoutNodeId) {
         let Some(removed) = self.nodes.remove(node) else {
             return;
         };
+        if let Some(engine) = &mut self.engine {
+            engine.remove(node);
+        }
         self.layouts[node.index()] = None;
         for child in removed.children {
             if self
@@ -608,6 +663,73 @@ mod tests {
         assert_eq!(tree.layout(child)?.bounds.width, 8);
         tree.compute(root, Size::new(13, 2), |_, _| Size::ZERO)?;
         assert_eq!(tree.layout(child)?.bounds.width, 13);
+        Ok(())
+    }
+
+    #[test]
+    fn reuses_cached_measurement_until_explicitly_invalidated() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let leaf = tree.add(LayoutStyle::default());
+        let root = tree.add_with_children(LayoutStyle::default(), &[leaf])?;
+        let mut measurements = 0;
+
+        tree.compute(root, Size::new(8, 1), |_, _| {
+            measurements += 1;
+            Size::new(3, 1)
+        })?;
+        assert!(measurements > 0);
+
+        measurements = 0;
+        tree.compute(root, Size::new(8, 1), |_, _| {
+            measurements += 1;
+            Size::new(3, 1)
+        })?;
+        assert_eq!(measurements, 0);
+
+        tree.invalidate(leaf)?;
+        tree.compute(root, Size::new(8, 1), |_, _| {
+            measurements += 1;
+            Size::new(5, 1)
+        })?;
+        assert!(measurements > 0);
+        assert_eq!(tree.layout(leaf)?.bounds.width, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn restores_updated_canonical_style_when_switching_roots() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let first = tree.add(LayoutStyle::default());
+        let second = tree.add(LayoutStyle::default());
+
+        tree.compute(first, Size::new(8, 1), |_, _| Size::ZERO)?;
+        tree.set_style(
+            first,
+            LayoutStyle::new().size(Dimension::cells(3), Dimension::cells(1)),
+        )?;
+        tree.compute(second, Size::new(8, 1), |_, _| Size::ZERO)?;
+        tree.compute(first, Size::new(8, 1), |_, _| Size::ZERO)?;
+
+        assert_eq!(tree.layout(first)?.bounds.size(), Size::new(3, 1));
+        Ok(())
+    }
+
+    #[test]
+    fn removing_a_subtree_updates_its_parent() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let descendant = tree.add(LayoutStyle::default());
+        let child = tree.add_with_children(LayoutStyle::default(), &[descendant])?;
+        let root = tree.add_with_children(LayoutStyle::default(), &[child])?;
+
+        tree.remove(child)?;
+        tree.compute(root, Size::new(8, 1), |_, _| Size::ZERO)?;
+
+        assert!(tree.children(root)?.is_empty());
+        assert_eq!(tree.layout(child), Err(LayoutError::UnknownNode(child)));
+        assert_eq!(
+            tree.layout(descendant),
+            Err(LayoutError::UnknownNode(descendant))
+        );
         Ok(())
     }
 

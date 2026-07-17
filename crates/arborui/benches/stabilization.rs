@@ -137,22 +137,92 @@ fn repeated_layout(criterion: &mut Criterion) {
         );
     }
     turn_group.finish();
+
+    let mut leaf_group = criterion.benchmark_group("ui/repeated_layout_one_leaf_change");
+    for (depth, node_count) in [(5, 63_u64), (8, 511), (11, 4_095)] {
+        leaf_group.throughput(Throughput::Elements(node_count));
+        leaf_group.bench_with_input(
+            BenchmarkId::new("balanced", node_count),
+            &depth,
+            |bencher, depth| {
+                let views = [
+                    balanced_layout_tree_variant(*depth, false),
+                    balanced_layout_tree_variant(*depth, true),
+                ];
+                let (mut tree, mut renderer, _) = initialized_ui(&views[0], VIEWPORT);
+                let mut variant = 0;
+                bencher.iter(|| {
+                    variant ^= 1;
+                    let prepared = tree
+                        .prepare(&views[variant], VIEWPORT, &mut renderer)
+                        .expect("benchmark frame must prepare");
+                    tree.commit(prepared, &mut renderer)
+                        .expect("benchmark frame must commit");
+                    black_box(renderer.current().size());
+                });
+            },
+        );
+    }
+    leaf_group.finish();
+
+    let mut structure_group = criterion.benchmark_group("ui/repeated_layout_structure_change");
+    for (depth, node_count) in [(5, 64_u64), (8, 512), (11, 4_096)] {
+        structure_group.bench_with_input(
+            BenchmarkId::new("balanced", node_count),
+            &depth,
+            |bencher, depth| {
+                let views = [
+                    balanced_layout_tree_with_extra(*depth, false),
+                    balanced_layout_tree_with_extra(*depth, true),
+                ];
+                let (mut tree, mut renderer, _) = initialized_ui(&views[0], VIEWPORT);
+                let mut variant = 0;
+                bencher.iter(|| {
+                    variant ^= 1;
+                    let prepared = tree
+                        .prepare(&views[variant], VIEWPORT, &mut renderer)
+                        .expect("benchmark frame must prepare");
+                    tree.commit(prepared, &mut renderer)
+                        .expect("benchmark frame must commit");
+                    black_box(renderer.current().size());
+                });
+            },
+        );
+    }
+    structure_group.finish();
 }
 
 fn balanced_layout_tree(depth: u32) -> Element<'static, ()> {
+    balanced_layout_tree_variant(depth, false)
+}
+
+fn balanced_layout_tree_variant(depth: u32, change_first_leaf: bool) -> Element<'static, ()> {
     if depth == 0 {
-        return Element::container([])
-            .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1)));
+        return Element::container([]).layout(LayoutStyle::new().size(
+            Dimension::cells(if change_first_leaf { 2 } else { 1 }),
+            Dimension::cells(1),
+        ));
     }
     Element::container([
-        balanced_layout_tree(depth - 1),
-        balanced_layout_tree(depth - 1),
+        balanced_layout_tree_variant(depth - 1, change_first_leaf),
+        balanced_layout_tree_variant(depth - 1, false),
     ])
     .layout(LayoutStyle::new().direction(if depth & 1 == 0 {
         FlexDirection::Row
     } else {
         FlexDirection::Column
     }))
+}
+
+fn balanced_layout_tree_with_extra(depth: u32, extra: bool) -> Element<'static, ()> {
+    let mut children = vec![balanced_layout_tree(depth)];
+    if extra {
+        children.push(
+            Element::container([])
+                .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1))),
+        );
+    }
+    Element::container(children)
 }
 
 fn initialized_ui(view: &Element<'_, ()>, size: Size) -> (UiTree, Renderer, arborui::NodeId) {
