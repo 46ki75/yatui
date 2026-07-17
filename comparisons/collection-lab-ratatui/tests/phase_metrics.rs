@@ -3,16 +3,22 @@
 use std::time::{Duration, Instant};
 
 use arborui::{
-    AppRunner, Capabilities, HeadlessRenderOutcome, RenderTimings, Renderer, Size, UiEvent,
+    AppRunner, Capabilities, HeadlessRenderOutcome, KeyAction, KeyModifiers, RenderTimings,
+    Renderer, Size, UiEvent, UiKey, UiKeyEvent,
 };
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
+    TableAction, TableLab,
 };
 
 const ITEM_COUNT: usize = 100_000;
 const WIDTH: u16 = 48;
 const HEIGHT: u16 = 12;
 const RESIZED_HEIGHT: u16 = 16;
+const OVERLAY_WIDTH: u16 = 40;
+const OVERLAY_HEIGHT: u16 = 12;
+const OVERLAY_RESIZED_WIDTH: u16 = 44;
+const OVERLAY_RESIZED_HEIGHT: u16 = 14;
 const SAMPLES: u32 = 100;
 const INITIAL_SAMPLES: u32 = 20;
 
@@ -41,6 +47,38 @@ enum LogScenario {
     Resize,
     AppendFollowing,
     AppendPaused,
+}
+
+#[derive(Clone, Copy)]
+enum OverlayScenario {
+    Open,
+    FocusNext,
+    Cancel,
+    Confirm,
+    BackgroundActivation,
+    ResizeOpen,
+}
+
+impl OverlayScenario {
+    const ALL: [Self; 6] = [
+        Self::Open,
+        Self::FocusNext,
+        Self::Cancel,
+        Self::Confirm,
+        Self::BackgroundActivation,
+        Self::ResizeOpen,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::FocusNext => "focus-next",
+            Self::Cancel => "cancel",
+            Self::Confirm => "confirm",
+            Self::BackgroundActivation => "background-activation",
+            Self::ResizeOpen => "resize-open",
+        }
+    }
 }
 
 impl LogScenario {
@@ -167,6 +205,161 @@ fn reports_arborui_scrolling_log_phase_metrics() {
             SAMPLES,
         );
     }
+}
+
+#[test]
+#[ignore = "runs the optimized overlay phase measurement matrix"]
+fn reports_arborui_overlay_phase_metrics() {
+    println!(
+        "| Workload | Scenario | Update ns | View ns | Stage/reconcile ns | Layout ns | Paint ns | Diff ns | Commit ns | Post-commit ns | Render total ns |"
+    );
+    println!("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+
+    print_workload_totals(
+        "Overlay",
+        "initial-render",
+        measure_overlay_initial_render(),
+        INITIAL_SAMPLES,
+    );
+    for scenario in OverlayScenario::ALL {
+        print_workload_totals(
+            "Overlay",
+            scenario.name(),
+            measure_overlay_scenario(scenario),
+            SAMPLES,
+        );
+    }
+}
+
+fn measure_overlay_initial_render() -> Totals {
+    let mut totals = Totals::default();
+    for _ in 0..INITIAL_SAMPLES {
+        let mut runner = new_overlay_runner();
+        let rendered = runner
+            .render_headless_timed()
+            .expect("initial overlay frame must render");
+        assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+        add_timings(
+            &mut totals.render,
+            rendered.timings.expect("render must include timings"),
+        );
+    }
+    totals
+}
+
+fn measure_overlay_scenario(scenario: OverlayScenario) -> Totals {
+    let mut runner = new_overlay_runner();
+    assert_eq!(
+        runner
+            .render_headless()
+            .expect("initial overlay frame must render"),
+        HeadlessRenderOutcome::Committed
+    );
+    if matches!(
+        scenario,
+        OverlayScenario::FocusNext
+            | OverlayScenario::Cancel
+            | OverlayScenario::Confirm
+            | OverlayScenario::ResizeOpen
+    ) {
+        send_overlay(&mut runner, OverlayAction::Open);
+        render_overlay_reset(&mut runner);
+    }
+
+    let mut totals = Totals::default();
+    for _ in 0..SAMPLES {
+        let update_started = Instant::now();
+        apply_overlay_scenario(&mut runner, scenario);
+        totals.update = totals.update.saturating_add(update_started.elapsed());
+        let rendered = runner
+            .render_headless_timed()
+            .expect("overlay scenario frame must render");
+        assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+        add_timings(
+            &mut totals.render,
+            rendered.timings.expect("render must include timings"),
+        );
+        reset_overlay_scenario(&mut runner, scenario);
+    }
+    totals
+}
+
+fn apply_overlay_scenario(runner: &mut AppRunner<OverlayLab>, scenario: OverlayScenario) {
+    match scenario {
+        OverlayScenario::Open => send_overlay(runner, OverlayAction::Open),
+        OverlayScenario::FocusNext => dispatch_overlay_key(runner, UiKey::Tab),
+        OverlayScenario::Cancel => dispatch_overlay_key(runner, UiKey::Escape),
+        OverlayScenario::Confirm => dispatch_overlay_key(runner, UiKey::Enter),
+        OverlayScenario::BackgroundActivation => {
+            send_overlay(runner, OverlayAction::ActivateBackground);
+        }
+        OverlayScenario::ResizeOpen => {
+            resize_overlay(runner, OVERLAY_RESIZED_WIDTH, OVERLAY_RESIZED_HEIGHT)
+        }
+    }
+}
+
+fn reset_overlay_scenario(runner: &mut AppRunner<OverlayLab>, scenario: OverlayScenario) {
+    match scenario {
+        OverlayScenario::Open => {
+            send_overlay(runner, OverlayAction::Cancel);
+            render_overlay_reset(runner);
+        }
+        OverlayScenario::FocusNext => {
+            dispatch_overlay_key(runner, UiKey::Tab);
+            render_overlay_reset(runner);
+        }
+        OverlayScenario::Cancel | OverlayScenario::Confirm => {
+            send_overlay(runner, OverlayAction::Open);
+            render_overlay_reset(runner);
+        }
+        OverlayScenario::ResizeOpen => {
+            resize_overlay(runner, OVERLAY_WIDTH, OVERLAY_HEIGHT);
+            render_overlay_reset(runner);
+        }
+        OverlayScenario::BackgroundActivation => {}
+    }
+}
+
+fn send_overlay(runner: &mut AppRunner<OverlayLab>, action: OverlayAction) {
+    runner.enqueue(action);
+    runner.process_pending();
+}
+
+fn dispatch_overlay_key(runner: &mut AppRunner<OverlayLab>, key: UiKey) {
+    runner
+        .dispatch_ui_event(UiEvent::Key(UiKeyEvent {
+            key,
+            modifiers: KeyModifiers::NONE,
+            action: KeyAction::Press,
+        }))
+        .expect("overlay key event must dispatch");
+    runner.process_pending();
+}
+
+fn resize_overlay(runner: &mut AppRunner<OverlayLab>, width: u16, height: u16) {
+    runner
+        .dispatch_ui_event(UiEvent::Resize(Size::new(width, height)))
+        .expect("overlay resize event must dispatch");
+    runner.process_pending();
+}
+
+fn render_overlay_reset(runner: &mut AppRunner<OverlayLab>) {
+    assert_eq!(
+        runner
+            .render_headless()
+            .expect("overlay reset frame must render"),
+        HeadlessRenderOutcome::Committed
+    );
+}
+
+fn new_overlay_runner() -> AppRunner<OverlayLab> {
+    let size = Size::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
+    AppRunner::new(
+        OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+        size,
+        Renderer::new(size, Capabilities::default().width_policy),
+    )
 }
 
 fn measure_log_initial_render() -> Totals {

@@ -21,7 +21,11 @@ Can a facade-only application construct only a fixed or variable-height visible
 range while preserving stable identity, collection focus, selection, overscan,
 and measured scroll semantics across a million logical rows?
 
-These are the first four bounded slices of the production-scale application
+Can matched ArborUI and Ratatui applications produce the same modal overlay
+semantics and characters while exposing complete-turn, output, memory, and
+ArborUI phase costs?
+
+These are the first five bounded slices of the production-scale application
 proof. They do not attempt to prove comparative ergonomics.
 
 ## Implementation
@@ -99,6 +103,14 @@ viewport height because `Application::view` cannot currently construct children
 after layout resolves the viewport. Resize events update that height after the
 initial explicit value.
 
+The fifth slice adds a matched overlay workload. Both sides keep the application
+stack structurally stable, place an opaque scrim over the background, and center
+a 26x7 confirmation dialog. Focus opens inside the dialog, forward traversal
+wraps, and cancellation or confirmation restores the originating background
+control. Covered pointer targets cannot activate. ArborUI receives real key
+events through the runtime; because Ratatui is immediate-mode, its adapter
+implements the same focus policy explicitly in application state.
+
 ## Deterministic Evidence
 
 The public application harness verifies:
@@ -143,6 +155,9 @@ The public application harness verifies:
   and deterministic multiline rendering.
 - Criterion targets exercise fixed and variable visible-range lookup separately
   at 1,000, 100,000, and 1,000,000 logical rows.
+- Matched overlay tests prove focus trapping, wrapping, restoration, and pointer
+  isolation with exact character and semantic parity at 40x12 normally and
+  44x14 after resizing while open.
 
 One optimized Criterion run on 2026-07-17 measured fixed-height lookup at
 approximately 6.6, 7.0, and 7.0 nanoseconds for those sizes. Variable-height
@@ -299,6 +314,45 @@ showing that visible text changes still pass through complete table-row layout.
 The deterministic update intentionally excludes thread scheduling and ingress
 latency, which Focus Queue measures separately.
 
+The completed overlay workload measures cold initial, open, focus-next, cancel,
+confirm, background activation, and resize-open turns. One optimized local run
+on 2026-07-17 produced these Criterion point estimates and ranges:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Cold initial | 82.9 us (82.70-83.17) | 17.2 us (17.16-17.31) |
+| Open | 117 us (116.0-118.2) | 19.30 us (19.24-19.35) |
+| Focus next | 33.7 us (33.24-34.13) | 13.1 us (12.77-13.39) |
+| Cancel | 83.2 us (82.07-84.39) | 10.62 us (10.55-10.68) |
+| Confirm | 80.05 us (79.85-80.26) | 11.49 us (11.45-11.52) |
+| Background activation | 10.27 us (10.19-10.34) | 6.09 us (6.06-6.13) |
+| Resize while open | 123.2 us (122.8-123.6) | 26.87 us (26.76-26.98) |
+
+The production serializer probe reports `bytes/writer calls/flushes` as
+4512/3171/1 versus 701/428/1 initially, 4622/3242/1 versus 1321/845/1 on open,
+226/152/1 versus 19/12/1 on focus-next, and 4512/3171/1 versus 955/668/1 for
+both cancel and confirm. Background activation is 0/0/0 versus 19/12/1, and
+resize-open is 5792/4058/1 versus 1533/1018/2. Writer calls are serializer
+callbacks, not operating-system syscalls.
+
+The overlay model allocates zero bytes on both sides. Initial retained memory is
+79,092 bytes for ArborUI and 69,120 for Ratatui. ArborUI action-scoped retained
+allocations are 58,828 bytes for open, 36,260 for focus-next, 58,860 for cancel
+and confirm, 30,828 for background activation, and 101,348 for resize-open;
+Ratatui retains zero for the non-resize actions and 138,240 bytes for its resized
+double buffer. Action rows are incremental allocations retained at sample
+capture after building the baseline, not total process memory.
+
+ArborUI phase attribution in `update/view/stage/layout/paint/diff/commit/post`
+order is 0/1502/2331/25289/30664/11936/4420/861 ns initially,
+455/2770/4445/48096/42630/13272/4445/1579 ns on open, and
+3681/2199/3926/0/15873/2790/2906/1337 ns on focus-next. Cancel is
+2899/1519/3209/23765/28278/13330/5357/920 ns, confirm is
+3056/1376/3247/24812/28919/13246/5500/885 ns, background activation is
+309/1049/1897/0/987/1878/3395/638 ns, and resize-open is
+2652/2495/5383/43649/48179/13670/4724/1436 ns. Their measured totals are
+77,772, 118,736, 31,384, 77,110, 78,697, 11,118, and 120,647 ns respectively.
+
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
 generated transitions, comparing patches, complete buffers, hit maps, retained
@@ -385,6 +439,11 @@ until another application demonstrates whether it needs a safe synchronous
 deferred-child seam, a viewport-reporting contract, or only controlled
 application sizing. Wrapped-row measurement remains a related open contract.
 
+The overlay evidence shows that structural overlay turns expose layout, paint,
+and serialization costs, while focus movement and unchanged background
+activation use no-layout paths. No optimization is selected yet; the remaining
+workloads must establish whether these costs generalize.
+
 ## Limits And Next Evidence
 
 This slice does not complete the production-scale proof. It leaves these
@@ -405,7 +464,8 @@ scrolling-log slice adds chronological history, follow-tail behavior, paused
 viewport anchoring through eviction, deterministic append batches, and flat
 construction through one million records. Paused append skips ArborUI layout
 and backend output, while active scrolling remains substantially faster in the
-direct Ratatui adapter. Overlays, Unicode grapheme stress beyond single-cell
-labels, resize storms, and live ingress should establish whether the same
-bottlenecks generalize before another local optimization. Select and reusable
-table requirements can extend the pilot separately.
+direct Ratatui adapter. The matched overlay slice adds exact modal character and
+semantic parity plus latency, output, memory, and phase evidence. Unicode
+grapheme stress, resize storms, and live ingress should establish whether the
+same bottlenecks generalize before another local optimization. Select and
+reusable table requirements can extend the pilot separately.

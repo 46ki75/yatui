@@ -3,18 +3,24 @@
 use std::{error::Error, hint::black_box};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiTableLab, draw_test_log_terminal,
-    draw_test_table_terminal, draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
+    draw_test_log_terminal, draw_test_overlay_terminal, draw_test_table_terminal,
+    draw_test_terminal,
 };
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
+    TableAction, TableLab,
 };
-use arborui_test::{Size, TestApp};
+use arborui_test::{KeyCode, Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
 
 const WIDTH: u16 = 48;
 const HEIGHT: u16 = 12;
 const RESIZED_HEIGHT: u16 = 16;
+const OVERLAY_WIDTH: u16 = 40;
+const OVERLAY_HEIGHT: u16 = 12;
+const OVERLAY_RESIZED_WIDTH: u16 = 44;
+const OVERLAY_RESIZED_HEIGHT: u16 = 14;
 
 #[global_allocator]
 static ALLOCATOR: dhat::Alloc = dhat::Alloc;
@@ -30,6 +36,7 @@ enum Workload {
     Collection(CollectionMode),
     Table,
     Log,
+    Overlay,
 }
 
 #[derive(Clone, Copy)]
@@ -47,6 +54,12 @@ enum Scenario {
     PageUp,
     AppendFollowing,
     AppendPaused,
+    Open,
+    FocusNext,
+    Cancel,
+    Confirm,
+    BackgroundActivation,
+    ResizeOpen,
 }
 
 struct Metrics {
@@ -64,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().collect::<Vec<_>>();
     let [_, framework, workload, scenario, item_count] = arguments.as_slice() else {
         return Err(
-            "usage: memory_probe <arborui|ratatui> <fixed|variable|table|log> <scenario> <items>"
+            "usage: memory_probe <arborui|ratatui> <fixed|variable|table|log|overlay> <scenario> <items>"
                 .into(),
         );
     };
@@ -72,6 +85,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let workload = parse_workload(workload)?;
     let scenario = parse_scenario(scenario)?;
     let item_count = item_count.parse::<usize>()?;
+    if matches!(workload, Workload::Overlay) && item_count != 1 {
+        return Err("overlay items must be 1 (the workload has no item count)".into());
+    }
 
     let metrics = match framework {
         Framework::Arborui => measure_arborui(workload, scenario, item_count),
@@ -96,6 +112,7 @@ fn measure_arborui(workload: Workload, scenario: Scenario, item_count: usize) ->
         Workload::Collection(mode) => measure_arborui_collection(mode, scenario, item_count),
         Workload::Table => measure_arborui_table(scenario, item_count),
         Workload::Log => measure_arborui_log(scenario, item_count),
+        Workload::Overlay => measure_arborui_overlay(scenario),
     }
 }
 
@@ -162,7 +179,13 @@ fn measure_arborui_collection(
                     | Scenario::OffscreenUpdate
                     | Scenario::PageUp
                     | Scenario::AppendFollowing
-                    | Scenario::AppendPaused => {
+                    | Scenario::AppendPaused
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => {
                         unreachable!("other workload scenarios are handled separately")
                     }
                 }
@@ -174,7 +197,13 @@ fn measure_arborui_collection(
         | Scenario::OffscreenUpdate
         | Scenario::PageUp
         | Scenario::AppendFollowing
-        | Scenario::AppendPaused => {
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => {
             panic!("scenario belongs to another workload")
         }
     }
@@ -236,7 +265,13 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Reverse
                     | Scenario::PageUp
                     | Scenario::AppendFollowing
-                    | Scenario::AppendPaused => unreachable!("scenario is handled separately"),
+                    | Scenario::AppendPaused
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => unreachable!("scenario is handled separately"),
                 }
                 assert_bounded(application.application().constructed_rows());
                 black_box(application)
@@ -245,7 +280,13 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
         Scenario::Reverse
         | Scenario::PageUp
         | Scenario::AppendFollowing
-        | Scenario::AppendPaused => panic!("scenario is not a table scenario"),
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => panic!("scenario is not a table scenario"),
     }
 }
 
@@ -305,7 +346,13 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Selection
                     | Scenario::Reverse
                     | Scenario::VisibleUpdate
-                    | Scenario::OffscreenUpdate => {
+                    | Scenario::OffscreenUpdate
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => {
                         unreachable!("scenario is handled separately")
                     }
                 }
@@ -317,7 +364,64 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::Selection
         | Scenario::Reverse
         | Scenario::VisibleUpdate
-        | Scenario::OffscreenUpdate => panic!("scenario is not a scrolling-log scenario"),
+        | Scenario::OffscreenUpdate
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => panic!("scenario is not a scrolling-log scenario"),
+    }
+}
+
+fn measure_arborui_overlay(scenario: Scenario) -> Metrics {
+    match scenario {
+        Scenario::Model => measure(|| OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let application = TestApp::new(
+                OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+                overlay_size(),
+            );
+            assert_arborui_overlay_bounded(&application);
+            application
+        }),
+        Scenario::InitialRender => {
+            let model = OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
+            measure(move || {
+                let application = TestApp::new(model, overlay_size());
+                assert_arborui_overlay_bounded(&application);
+                application
+            })
+        }
+        Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => {
+            let mut application = arborui_overlay_fixture(scenario);
+            measure(move || {
+                match scenario {
+                    Scenario::Open | Scenario::Confirm | Scenario::BackgroundActivation => {
+                        application.key(KeyCode::Enter);
+                    }
+                    Scenario::FocusNext => {
+                        application.key(KeyCode::Tab);
+                    }
+                    Scenario::Cancel => {
+                        application.key(KeyCode::Escape);
+                    }
+                    Scenario::ResizeOpen => {
+                        application
+                            .resize(Size::new(OVERLAY_RESIZED_WIDTH, OVERLAY_RESIZED_HEIGHT));
+                    }
+                    _ => unreachable!("setup scenarios are handled separately"),
+                }
+                assert_arborui_overlay_bounded(&application);
+                black_box(application)
+            })
+        }
+        _ => panic!("scenario is not an overlay scenario"),
     }
 }
 
@@ -326,6 +430,7 @@ fn measure_ratatui(workload: Workload, scenario: Scenario, item_count: usize) ->
         Workload::Collection(mode) => measure_ratatui_collection(mode, scenario, item_count),
         Workload::Table => measure_ratatui_table(scenario, item_count),
         Workload::Log => measure_ratatui_log(scenario, item_count),
+        Workload::Overlay => measure_ratatui_overlay(scenario),
     }
 }
 
@@ -392,7 +497,13 @@ fn measure_ratatui_collection(
                     | Scenario::OffscreenUpdate
                     | Scenario::PageUp
                     | Scenario::AppendFollowing
-                    | Scenario::AppendPaused => {
+                    | Scenario::AppendPaused
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => {
                         unreachable!("other workload scenarios are handled separately")
                     }
                 }
@@ -405,7 +516,13 @@ fn measure_ratatui_collection(
         | Scenario::OffscreenUpdate
         | Scenario::PageUp
         | Scenario::AppendFollowing
-        | Scenario::AppendPaused => {
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => {
             panic!("scenario belongs to another workload")
         }
     }
@@ -473,7 +590,13 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Reverse
                     | Scenario::PageUp
                     | Scenario::AppendFollowing
-                    | Scenario::AppendPaused => unreachable!("scenario is handled separately"),
+                    | Scenario::AppendPaused
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => unreachable!("scenario is handled separately"),
                 }
                 draw_test_table_terminal(&mut terminal, &mut application)
                     .expect("table frame must draw");
@@ -484,7 +607,13 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
         Scenario::Reverse
         | Scenario::PageUp
         | Scenario::AppendFollowing
-        | Scenario::AppendPaused => panic!("scenario is not a table scenario"),
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => panic!("scenario is not a table scenario"),
     }
 }
 
@@ -551,7 +680,13 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Selection
                     | Scenario::Reverse
                     | Scenario::VisibleUpdate
-                    | Scenario::OffscreenUpdate => {
+                    | Scenario::OffscreenUpdate
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => {
                         unreachable!("scenario is handled separately")
                     }
                 }
@@ -565,7 +700,79 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::Selection
         | Scenario::Reverse
         | Scenario::VisibleUpdate
-        | Scenario::OffscreenUpdate => panic!("scenario is not a scrolling-log scenario"),
+        | Scenario::OffscreenUpdate
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => panic!("scenario is not a scrolling-log scenario"),
+    }
+}
+
+fn measure_ratatui_overlay(scenario: Scenario) -> Metrics {
+    match scenario {
+        Scenario::Model => measure(|| RatatuiOverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let application = RatatuiOverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
+            let mut terminal = Terminal::new(TestBackend::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))
+                .expect("test terminal must open");
+            draw_test_overlay_terminal(&mut terminal, &application)
+                .expect("initial overlay frame must draw");
+            assert_ratatui_overlay_bounded(&application, &terminal);
+            (application, terminal)
+        }),
+        Scenario::InitialRender => {
+            let application = RatatuiOverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
+            measure(move || {
+                let mut terminal = Terminal::new(TestBackend::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))
+                    .expect("test terminal must open");
+                draw_test_overlay_terminal(&mut terminal, &application)
+                    .expect("initial overlay frame must draw");
+                assert_ratatui_overlay_bounded(&application, &terminal);
+                (application, terminal)
+            })
+        }
+        Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => {
+            let (mut application, mut terminal) = ratatui_overlay_fixture(scenario);
+            measure(move || {
+                match scenario {
+                    Scenario::Open => {
+                        application.apply(OverlayAction::Open);
+                    }
+                    Scenario::FocusNext => application.focus_next(),
+                    Scenario::Cancel => {
+                        application.apply(OverlayAction::Cancel);
+                    }
+                    Scenario::Confirm => {
+                        application.apply(OverlayAction::Confirm);
+                    }
+                    Scenario::BackgroundActivation => {
+                        application.apply(OverlayAction::ActivateBackground);
+                    }
+                    Scenario::ResizeOpen => {
+                        terminal
+                            .backend_mut()
+                            .resize(OVERLAY_RESIZED_WIDTH, OVERLAY_RESIZED_HEIGHT);
+                        application.apply(OverlayAction::Resize {
+                            width: OVERLAY_RESIZED_WIDTH,
+                            height: OVERLAY_RESIZED_HEIGHT,
+                        });
+                    }
+                    _ => unreachable!("setup scenarios are handled separately"),
+                }
+                draw_test_overlay_terminal(&mut terminal, &application)
+                    .expect("overlay frame must draw");
+                assert_ratatui_overlay_bounded(&application, &terminal);
+                black_box((application, terminal))
+            })
+        }
+        _ => panic!("scenario is not an overlay scenario"),
     }
 }
 
@@ -602,6 +809,78 @@ fn ratatui_fixture(
     (application, terminal)
 }
 
+fn arborui_overlay_fixture(scenario: Scenario) -> TestApp<OverlayLab> {
+    let mut application = TestApp::new(
+        OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+        overlay_size(),
+    );
+    match scenario {
+        Scenario::FocusNext | Scenario::Cancel | Scenario::Confirm | Scenario::ResizeOpen => {
+            application.key(KeyCode::Enter);
+        }
+        Scenario::BackgroundActivation => {
+            application.key(KeyCode::Tab);
+        }
+        Scenario::Open => {}
+        _ => unreachable!("only overlay actions use an overlay fixture"),
+    }
+    assert_arborui_overlay_bounded(&application);
+    application
+}
+
+fn ratatui_overlay_fixture(scenario: Scenario) -> (RatatuiOverlayLab, Terminal<TestBackend>) {
+    let mut application = RatatuiOverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
+    let mut terminal = Terminal::new(TestBackend::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))
+        .expect("test terminal must open");
+    draw_test_overlay_terminal(&mut terminal, &application)
+        .expect("initial overlay frame must draw");
+    match scenario {
+        Scenario::FocusNext | Scenario::Cancel | Scenario::Confirm | Scenario::ResizeOpen => {
+            application.apply(OverlayAction::Open);
+            draw_test_overlay_terminal(&mut terminal, &application)
+                .expect("open overlay baseline must draw");
+        }
+        Scenario::BackgroundActivation => {
+            application.focus_next();
+            draw_test_overlay_terminal(&mut terminal, &application)
+                .expect("focused background baseline must draw");
+        }
+        Scenario::Open => {}
+        _ => unreachable!("only overlay actions use an overlay fixture"),
+    }
+    assert_ratatui_overlay_bounded(&application, &terminal);
+    (application, terminal)
+}
+
+fn assert_arborui_overlay_bounded(application: &TestApp<OverlayLab>) {
+    let frame = application.frame();
+    let (width, height) = application.application().model().terminal_size();
+    assert_eq!(frame.size(), Size::new(width, height));
+    assert_eq!(
+        frame.cells().len(),
+        usize::from(width) * usize::from(height)
+    );
+    assert!(frame.cells().len() <= overlay_max_cells());
+}
+
+fn assert_ratatui_overlay_bounded(
+    application: &RatatuiOverlayLab,
+    terminal: &Terminal<TestBackend>,
+) {
+    let buffer = terminal.backend().buffer();
+    let (width, height) = application.terminal_size();
+    assert_eq!((buffer.area.width, buffer.area.height), (width, height));
+    assert_eq!(
+        buffer.content().len(),
+        usize::from(width) * usize::from(height)
+    );
+    assert!(buffer.content().len() <= overlay_max_cells());
+}
+
+const fn overlay_max_cells() -> usize {
+    OVERLAY_RESIZED_WIDTH as usize * OVERLAY_RESIZED_HEIGHT as usize
+}
+
 fn assert_bounded(constructed_rows: usize) {
     assert!(constructed_rows > 0);
     assert!(constructed_rows <= usize::from(RESIZED_HEIGHT));
@@ -621,6 +900,7 @@ fn parse_workload(value: &str) -> Result<Workload, Box<dyn Error>> {
         "variable" => Ok(Workload::Collection(CollectionMode::Variable)),
         "table" => Ok(Workload::Table),
         "log" => Ok(Workload::Log),
+        "overlay" => Ok(Workload::Overlay),
         _ => Err(format!("unknown workload: {value}").into()),
     }
 }
@@ -640,12 +920,22 @@ fn parse_scenario(value: &str) -> Result<Scenario, Box<dyn Error>> {
         "page-up" => Ok(Scenario::PageUp),
         "append-following" => Ok(Scenario::AppendFollowing),
         "append-paused" => Ok(Scenario::AppendPaused),
+        "open" => Ok(Scenario::Open),
+        "focus-next" => Ok(Scenario::FocusNext),
+        "cancel" => Ok(Scenario::Cancel),
+        "confirm" => Ok(Scenario::Confirm),
+        "background-activation" => Ok(Scenario::BackgroundActivation),
+        "resize-open" => Ok(Scenario::ResizeOpen),
         _ => Err(format!("unknown scenario: {value}").into()),
     }
 }
 
 const fn base_size() -> Size {
     Size::new(WIDTH, HEIGHT)
+}
+
+const fn overlay_size() -> Size {
+    Size::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)
 }
 
 fn viewport_height(terminal_height: u16) -> usize {

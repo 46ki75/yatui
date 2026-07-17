@@ -31,6 +31,16 @@ const LOG_ACTIONS: [&str; 6] = [
     "append-paused",
     "unchanged-redraw",
 ];
+const OVERLAY_ACTIONS: [&str; 7] = [
+    "cold",
+    "open",
+    "focus-next",
+    "cancel",
+    "confirm",
+    "background-activation",
+    "resize-open",
+];
+const OVERLAY_ITEM_COUNT: usize = 1;
 
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
@@ -109,6 +119,17 @@ fn reports_isolated_memory_metrics() {
             }
         }
         assert_viewport_bounded(framework, "log", &initial_render);
+
+        for scenario in OVERLAY_ACTIONS {
+            let metrics = run_probe(framework, "overlay", scenario, OVERLAY_ITEM_COUNT);
+            assert_released(framework, "overlay", scenario, metrics);
+            print_metrics(framework, "overlay", scenario, OVERLAY_ITEM_COUNT, metrics);
+        }
+        for scenario in ["model", "initial-render"] {
+            let metrics = run_probe(framework, "overlay", scenario, OVERLAY_ITEM_COUNT);
+            assert_released(framework, "overlay", scenario, metrics);
+            print_metrics(framework, "overlay", scenario, OVERLAY_ITEM_COUNT, metrics);
+        }
     }
 }
 

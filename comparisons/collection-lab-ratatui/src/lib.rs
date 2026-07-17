@@ -3,8 +3,8 @@
 use std::{convert::Infallible, num::NonZeroUsize};
 
 use arborui_example_collection_lab::{
-    CollectionMode, FixedHeightProvider, LogAction, LogModel, TableAction, TableModel,
-    VariableHeightProvider, VisibleRange,
+    CollectionMode, FixedHeightProvider, LogAction, LogModel, OverlayAction, OverlayModel,
+    TableAction, TableModel, VariableHeightProvider, VisibleRange,
 };
 use ratatui::{
     Frame, Terminal,
@@ -106,6 +106,32 @@ pub struct LogSemanticState {
     pub generation: u64,
 }
 
+/// Focus target in the matched overlay workload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OverlayFocus {
+    /// Control that opens the dialog.
+    Open,
+    /// Covered background action.
+    Background,
+    /// Dialog confirmation action.
+    Confirm,
+    /// Dialog cancellation action.
+    Cancel,
+}
+
+/// Observable state of the matched overlay workload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OverlaySemanticState {
+    /// Whether the modal dialog is open.
+    pub dialog_open: bool,
+    /// Number of confirmed actions.
+    pub confirmations: u64,
+    /// Number of background control activations.
+    pub background_activations: u64,
+    /// Active focus target.
+    pub focus: OverlayFocus,
+}
+
 #[derive(Clone, Debug)]
 struct Item {
     key: u64,
@@ -139,6 +165,12 @@ pub struct RatatuiTableLab {
 pub struct RatatuiLogLab {
     model: LogModel,
     constructed_rows: usize,
+}
+
+/// Ratatui adapter around the framework-neutral overlay model.
+pub struct RatatuiOverlayLab {
+    model: OverlayModel,
+    focus: OverlayFocus,
 }
 
 /// Logical test backend that records Ratatui's diff output work.
@@ -739,6 +771,160 @@ impl RatatuiLogLab {
     }
 }
 
+impl RatatuiOverlayLab {
+    /// Creates a closed overlay workload at explicit terminal dimensions.
+    #[must_use]
+    pub const fn new(width: u16, height: u16) -> Self {
+        Self {
+            model: OverlayModel::new(width, height),
+            focus: OverlayFocus::Open,
+        }
+    }
+
+    /// Applies one shared action and updates focus for modal transitions.
+    pub fn apply(&mut self, action: OverlayAction) -> bool {
+        match action {
+            OverlayAction::Open => self.focus = OverlayFocus::Confirm,
+            OverlayAction::Confirm | OverlayAction::Cancel => self.focus = OverlayFocus::Open,
+            OverlayAction::ActivateBackground
+            | OverlayAction::Resize { .. }
+            | OverlayAction::Quit => {}
+        }
+        self.model.apply(action)
+    }
+
+    /// Moves focus forward, wrapping within the active focus scope.
+    pub const fn focus_next(&mut self) {
+        self.focus = if self.model.dialog_open() {
+            match self.focus {
+                OverlayFocus::Confirm => OverlayFocus::Cancel,
+                _ => OverlayFocus::Confirm,
+            }
+        } else {
+            match self.focus {
+                OverlayFocus::Open => OverlayFocus::Background,
+                _ => OverlayFocus::Open,
+            }
+        };
+    }
+
+    /// Moves focus backward, wrapping within the active focus scope.
+    pub const fn focus_previous(&mut self) {
+        self.focus = if self.model.dialog_open() {
+            match self.focus {
+                OverlayFocus::Confirm => OverlayFocus::Cancel,
+                _ => OverlayFocus::Confirm,
+            }
+        } else {
+            match self.focus {
+                OverlayFocus::Open => OverlayFocus::Background,
+                _ => OverlayFocus::Open,
+            }
+        };
+    }
+
+    /// Returns the dimensions expected by the next draw.
+    #[must_use]
+    pub const fn terminal_size(&self) -> (u16, u16) {
+        self.model.terminal_size()
+    }
+
+    /// Returns the shared application model.
+    #[must_use]
+    pub const fn model(&self) -> &OverlayModel {
+        &self.model
+    }
+
+    /// Returns current observable application state.
+    #[must_use]
+    pub const fn semantic_state(&self) -> OverlaySemanticState {
+        OverlaySemanticState {
+            dialog_open: self.model.dialog_open(),
+            confirmations: self.model.confirmations(),
+            background_activations: self.model.background_activations(),
+            focus: self.focus,
+        }
+    }
+
+    /// Paints one complete desired overlay frame.
+    pub fn render(&self, frame: &mut Frame<'_>) {
+        let area = frame.area();
+        let buffer = frame.buffer_mut();
+        paint_block(
+            buffer,
+            area,
+            "Overlay composition",
+            Style::new().fg(Color::LightCyan),
+        );
+        paint_clipped(
+            buffer,
+            area.x.saturating_add(2),
+            area.y.saturating_add(2),
+            "Persistent workspace",
+            Style::new(),
+        );
+        paint_clipped(
+            buffer,
+            area.x.saturating_add(2),
+            area.y.saturating_add(4),
+            "[ Open dialog ]",
+            Style::new(),
+        );
+        paint_clipped(
+            buffer,
+            area.x.saturating_add(2),
+            area.y.saturating_add(5),
+            "[ Background action ]",
+            Style::new(),
+        );
+        paint_clipped_width(
+            buffer,
+            area.x.saturating_add(2),
+            area.y.saturating_add(7),
+            "Confirmation and background counts are tracked semantically.",
+            area.width.saturating_sub(4),
+            Style::new(),
+        );
+
+        if self.model.dialog_open() {
+            buffer.set_style(area, Style::new().bg(Color::Black));
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    buffer[(x, y)].set_symbol(" ");
+                }
+            }
+            let dialog = Rect::new(
+                area.x.saturating_add(area.width.saturating_sub(26) / 2),
+                area.y
+                    .saturating_add(area.height.saturating_sub(7).saturating_add(1) / 2),
+                26.min(area.width),
+                7.min(area.height),
+            );
+            paint_block(
+                buffer,
+                dialog,
+                "Confirm action",
+                Style::new().fg(Color::LightCyan),
+            );
+            paint_clipped(
+                buffer,
+                dialog.x.saturating_add(2),
+                dialog.y.saturating_add(2),
+                "Delete selected item?",
+                Style::new(),
+            );
+            paint_clipped_width(
+                buffer,
+                dialog.x.saturating_add(2),
+                dialog.y.saturating_add(4),
+                "[ Confirm ]  [ Cancel ]",
+                dialog.width.saturating_sub(4),
+                Style::new(),
+            );
+        }
+    }
+}
+
 /// Draws one application frame into Ratatui's logical test terminal.
 pub fn draw_test_frame(
     terminal: &mut Terminal<TestBackend>,
@@ -817,6 +1003,32 @@ pub fn draw_log_terminal<B: Backend>(
     Ok(())
 }
 
+/// Draws one overlay frame into Ratatui's logical test terminal.
+pub fn draw_test_overlay_frame(
+    terminal: &mut Terminal<TestBackend>,
+    application: &RatatuiOverlayLab,
+) -> Result<String, Infallible> {
+    draw_test_overlay_terminal(terminal, application)?;
+    Ok(buffer_characters(terminal.backend().buffer()))
+}
+
+/// Draws an overlay without materializing a character snapshot.
+pub fn draw_test_overlay_terminal(
+    terminal: &mut Terminal<TestBackend>,
+    application: &RatatuiOverlayLab,
+) -> Result<(), Infallible> {
+    draw_overlay_terminal(terminal, application)
+}
+
+/// Draws one complete overlay frame through any Ratatui backend.
+pub fn draw_overlay_terminal<B: Backend>(
+    terminal: &mut Terminal<B>,
+    application: &RatatuiOverlayLab,
+) -> Result<(), B::Error> {
+    terminal.draw(|frame| application.render(frame))?;
+    Ok(())
+}
+
 /// Converts a Ratatui buffer to ArborUI's full-width character snapshot format.
 #[must_use]
 pub fn buffer_characters(buffer: &Buffer) -> String {
@@ -855,6 +1067,34 @@ fn paint_horizontal_border(
         buffer[(x.saturating_add(width - 1), y)]
             .set_char(right)
             .set_style(style);
+    }
+}
+
+fn paint_block(buffer: &mut Buffer, area: Rect, title: &str, style: Style) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    paint_horizontal_border(buffer, area.x, area.y, area.width, '┌', '┐', style);
+    paint_clipped_width(
+        buffer,
+        area.x.saturating_add(1),
+        area.y,
+        &format!(" {title} "),
+        area.width.saturating_sub(2),
+        style,
+    );
+    if area.height == 1 {
+        return;
+    }
+    let bottom = area.y.saturating_add(area.height - 1);
+    paint_horizontal_border(buffer, area.x, bottom, area.width, '└', '┘', style);
+    for y in area.y.saturating_add(1)..bottom {
+        buffer[(area.x, y)].set_symbol("│").set_style(style);
+        if area.width > 1 {
+            buffer[(area.x.saturating_add(area.width - 1), y)]
+                .set_symbol("│")
+                .set_style(style);
+        }
     }
 }
 

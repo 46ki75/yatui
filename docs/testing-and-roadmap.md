@@ -498,7 +498,11 @@ full-layout/full-paint reference and improve the measured collection turns;
 the matched table workload confirms bounded million-row turns and demonstrates
 that offscreen model updates can reuse unchanged committed output. The matched
 scrolling log confirms flat million-record turns and the same reuse for paused
-producer appends. Overlay, resize-storm, and live-ingress evidence plus
+producer appends. The completed matched overlay workload adds a stable stack,
+opaque scrim, centered dialog, focus trap with wrap and restoration, pointer
+isolation, exact character and semantic parity, normal and resize-open evidence,
+production output counts, retained-memory measurements, and ArborUI phase
+attribution. Unicode grapheme stress, resize storms, live ingress, and
 finer-grained incremental work remain open.
 
 Deliver:

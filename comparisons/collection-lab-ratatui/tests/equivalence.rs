@@ -1,16 +1,64 @@
 //! Matched semantic and character-frame contracts.
 
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, OVERLAY_BACKGROUND_KEY,
+    OVERLAY_CANCEL_KEY, OVERLAY_CONFIRM_KEY, OVERLAY_OPEN_KEY, OverlayAction, OverlayLab,
+    TableAction, TableLab,
 };
-use arborui_test::{Size, TestApp};
+use arborui_test::{Key, KeyCode, KeyEventKind, KeyModifiers, Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, CountingBackend, LogSemanticState, RatatuiCollectionLab, RatatuiLogLab,
-    RatatuiTableLab, SemanticState, TableSemanticState, draw_terminal, draw_test_frame,
-    draw_test_log_frame, draw_test_table_frame,
+    ComparisonAction, CountingBackend, LogSemanticState, OverlayFocus, OverlaySemanticState,
+    RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab, SemanticState,
+    TableSemanticState, draw_terminal, draw_test_frame, draw_test_log_frame,
+    draw_test_overlay_frame, draw_test_table_frame,
 };
+
+#[test]
+fn canonical_overlay_trace_matches_semantics_and_characters() {
+    let mut arborui = TestApp::new(OverlayLab::new(40, 12), Size::new(40, 12));
+    let mut ratatui = RatatuiOverlayLab::new(40, 12);
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal must open");
+
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+
+    arborui.key(KeyCode::Enter);
+    ratatui.apply(OverlayAction::Open);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+
+    arborui.key(KeyCode::Tab);
+    ratatui.focus_next();
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    arborui.key(KeyCode::Tab);
+    ratatui.focus_next();
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    arborui.key_with(KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
+    ratatui.focus_previous();
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+
+    assert_eq!(arborui.application().model().background_activations(), 0);
+    assert_eq!(ratatui.model().background_activations(), 0);
+
+    arborui.key(KeyCode::Escape);
+    ratatui.apply(OverlayAction::Cancel);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+
+    arborui.key(KeyCode::Enter);
+    ratatui.apply(OverlayAction::Open);
+    arborui.key(KeyCode::Enter);
+    ratatui.apply(OverlayAction::Confirm);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    assert_eq!(ratatui.semantic_state().confirmations, 1);
+
+    arborui.resize(Size::new(44, 14));
+    ratatui.apply(OverlayAction::Resize {
+        width: 44,
+        height: 14,
+    });
+    terminal.backend_mut().resize(44, 14);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+}
 
 #[test]
 fn canonical_scrolling_log_trace_matches_semantics_and_characters() {
@@ -398,5 +446,32 @@ fn apply_arborui_log(app: &mut TestApp<LogLab>, action: LogAction) {
         app.resize(Size::new(width, height));
     } else {
         app.send(action);
+    }
+}
+
+fn assert_overlay_frame(
+    arborui: &TestApp<OverlayLab>,
+    ratatui: &RatatuiOverlayLab,
+    terminal: &mut Terminal<TestBackend>,
+) {
+    let frame =
+        draw_test_overlay_frame(terminal, ratatui).expect("Ratatui overlay frame must draw");
+    assert_eq!(arborui_overlay_state(arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), frame);
+}
+
+fn arborui_overlay_state(app: &TestApp<OverlayLab>) -> OverlaySemanticState {
+    let focus = match app.focused_key() {
+        Some(key) if key == Key::from(OVERLAY_OPEN_KEY) => OverlayFocus::Open,
+        Some(key) if key == Key::from(OVERLAY_BACKGROUND_KEY) => OverlayFocus::Background,
+        Some(key) if key == Key::from(OVERLAY_CONFIRM_KEY) => OverlayFocus::Confirm,
+        Some(key) if key == Key::from(OVERLAY_CANCEL_KEY) => OverlayFocus::Cancel,
+        key => panic!("unexpected overlay focus: {key:?}"),
+    };
+    OverlaySemanticState {
+        dialog_open: app.application().model().dialog_open(),
+        confirmations: app.application().model().confirmations(),
+        background_activations: app.application().model().background_activations(),
+        focus,
     }
 }

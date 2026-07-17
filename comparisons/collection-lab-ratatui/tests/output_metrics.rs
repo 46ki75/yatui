@@ -9,13 +9,15 @@ use arborui::{
     Capabilities, CrosstermBackend as ArboruiCrosstermBackend, FramePatch, TerminalBackend,
 };
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiTableLab, draw_test_log_terminal,
-    draw_test_table_terminal, draw_test_terminal,
+    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
+    draw_test_log_terminal, draw_test_overlay_terminal, draw_test_table_terminal,
+    draw_test_terminal,
 };
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
+    TableAction, TableLab,
 };
-use arborui_test::{Size as ArboruiSize, TestApp};
+use arborui_test::{KeyCode, Size as ArboruiSize, TestApp};
 use ratatui::{
     Terminal,
     backend::{Backend, CrosstermBackend as RatatuiCrosstermBackend, TestBackend},
@@ -27,6 +29,10 @@ const ITEM_COUNT: usize = 100_000;
 const WIDTH: u16 = 48;
 const HEIGHT: u16 = 12;
 const RESIZED_HEIGHT: u16 = 16;
+const OVERLAY_WIDTH: u16 = 40;
+const OVERLAY_HEIGHT: u16 = 12;
+const RESIZED_OVERLAY_WIDTH: u16 = 44;
+const RESIZED_OVERLAY_HEIGHT: u16 = 14;
 
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
@@ -56,6 +62,41 @@ enum LogScenario {
     Resize,
     AppendFollowing,
     AppendPaused,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OverlayScenario {
+    InitialRender,
+    Open,
+    FocusNext,
+    Cancel,
+    Confirm,
+    BackgroundActivation,
+    ResizeOpen,
+}
+
+impl OverlayScenario {
+    const ALL: [Self; 7] = [
+        Self::InitialRender,
+        Self::Open,
+        Self::FocusNext,
+        Self::Cancel,
+        Self::Confirm,
+        Self::BackgroundActivation,
+        Self::ResizeOpen,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::InitialRender => "initial-render",
+            Self::Open => "open",
+            Self::FocusNext => "focus-next",
+            Self::Cancel => "cancel",
+            Self::Confirm => "confirm",
+            Self::BackgroundActivation => "background-activation",
+            Self::ResizeOpen => "resize-open",
+        }
+    }
 }
 
 impl LogScenario {
@@ -258,6 +299,36 @@ fn reports_scrolling_log_ansi_output_metrics() {
     }
 }
 
+#[test]
+fn reports_overlay_ansi_output_metrics() {
+    println!("| Scenario | Framework | ANSI bytes | Writer calls | Flushes |");
+    println!("| --- | --- | ---: | ---: | ---: |");
+
+    for scenario in OverlayScenario::ALL {
+        let arborui = arborui_overlay_metrics(scenario);
+        let ratatui = ratatui_overlay_metrics(scenario);
+        println!(
+            "| {} | ArborUI | {} | {} | {} |",
+            scenario.name(),
+            arborui.bytes,
+            arborui.writes,
+            arborui.flushes
+        );
+        println!(
+            "| {} | Ratatui | {} | {} | {} |",
+            scenario.name(),
+            ratatui.bytes,
+            ratatui.writes,
+            ratatui.flushes
+        );
+
+        if !matches!(scenario, OverlayScenario::BackgroundActivation) {
+            assert!(arborui.bytes > 0);
+        }
+        assert!(ratatui.bytes > 0);
+    }
+}
+
 fn arborui_metrics(mode: CollectionMode, scenario: Scenario) -> OutputMetrics {
     let mut application = TestApp::new(
         CollectionLab::new(mode, ITEM_COUNT, usize::from(HEIGHT - 4)),
@@ -377,6 +448,54 @@ fn arborui_log_metrics(scenario: LogScenario) -> OutputMetrics {
                 generation: 1,
             },
         ),
+    };
+    patch.map_or_else(OutputMetrics::default, |patch| serialize_arborui(&patch))
+}
+
+fn arborui_overlay_metrics(scenario: OverlayScenario) -> OutputMetrics {
+    let mut application = TestApp::new(
+        OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+        ArboruiSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+    );
+    match scenario {
+        OverlayScenario::FocusNext
+        | OverlayScenario::Cancel
+        | OverlayScenario::Confirm
+        | OverlayScenario::ResizeOpen => {
+            application.key(KeyCode::Enter);
+        }
+        OverlayScenario::BackgroundActivation => {
+            application.key(KeyCode::Tab);
+        }
+        OverlayScenario::InitialRender | OverlayScenario::Open => {}
+    }
+
+    let patch = if matches!(scenario, OverlayScenario::InitialRender) {
+        application.last_frame_patch().cloned()
+    } else {
+        let previous_count = application.frame_patches().len();
+        match scenario {
+            OverlayScenario::Open | OverlayScenario::Confirm => {
+                application.key(KeyCode::Enter);
+            }
+            OverlayScenario::FocusNext => {
+                application.key(KeyCode::Tab);
+            }
+            OverlayScenario::Cancel => {
+                application.key(KeyCode::Escape);
+            }
+            OverlayScenario::BackgroundActivation => {
+                application.key(KeyCode::Enter);
+            }
+            OverlayScenario::ResizeOpen => {
+                application.resize(ArboruiSize::new(
+                    RESIZED_OVERLAY_WIDTH,
+                    RESIZED_OVERLAY_HEIGHT,
+                ));
+            }
+            OverlayScenario::InitialRender => unreachable!("initial render handled above"),
+        }
+        application.frame_patches().get(previous_count).cloned()
     };
     patch.map_or_else(OutputMetrics::default, |patch| serialize_arborui(&patch))
 }
@@ -534,6 +653,77 @@ fn ratatui_log_metrics(scenario: LogScenario) -> OutputMetrics {
     let current = terminal.backend().buffer().clone();
     if matches!(scenario, LogScenario::Resize) {
         let blank = Buffer::empty(Rect::new(0, 0, WIDTH, RESIZED_HEIGHT));
+        serialize_ratatui(&blank, &current, true)
+    } else {
+        serialize_ratatui(&previous, &current, false)
+    }
+}
+
+fn ratatui_overlay_metrics(scenario: OverlayScenario) -> OutputMetrics {
+    let mut application = RatatuiOverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
+    let mut terminal = Terminal::new(TestBackend::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))
+        .expect("test terminal must open");
+    draw_test_overlay_terminal(&mut terminal, &application)
+        .expect("initial overlay frame must draw");
+
+    if matches!(scenario, OverlayScenario::InitialRender) {
+        let initial = terminal.backend().buffer().clone();
+        let blank = Buffer::empty(Rect::new(0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT));
+        return serialize_ratatui(&blank, &initial, false);
+    }
+
+    match scenario {
+        OverlayScenario::FocusNext
+        | OverlayScenario::Cancel
+        | OverlayScenario::Confirm
+        | OverlayScenario::ResizeOpen => {
+            application.apply(OverlayAction::Open);
+            draw_test_overlay_terminal(&mut terminal, &application)
+                .expect("open overlay baseline must draw");
+        }
+        OverlayScenario::BackgroundActivation => {
+            application.focus_next();
+            draw_test_overlay_terminal(&mut terminal, &application)
+                .expect("background focus baseline must draw");
+        }
+        OverlayScenario::InitialRender | OverlayScenario::Open => {}
+    }
+    let previous = terminal.backend().buffer().clone();
+
+    match scenario {
+        OverlayScenario::Open => {
+            application.apply(OverlayAction::Open);
+        }
+        OverlayScenario::FocusNext => application.focus_next(),
+        OverlayScenario::Cancel => {
+            application.apply(OverlayAction::Cancel);
+        }
+        OverlayScenario::Confirm => {
+            application.apply(OverlayAction::Confirm);
+        }
+        OverlayScenario::BackgroundActivation => {
+            application.apply(OverlayAction::ActivateBackground);
+        }
+        OverlayScenario::ResizeOpen => {
+            terminal
+                .backend_mut()
+                .resize(RESIZED_OVERLAY_WIDTH, RESIZED_OVERLAY_HEIGHT);
+            application.apply(OverlayAction::Resize {
+                width: RESIZED_OVERLAY_WIDTH,
+                height: RESIZED_OVERLAY_HEIGHT,
+            });
+        }
+        OverlayScenario::InitialRender => unreachable!("initial render returned above"),
+    }
+    draw_test_overlay_terminal(&mut terminal, &application).expect("overlay frame must draw");
+    let current = terminal.backend().buffer().clone();
+    if matches!(scenario, OverlayScenario::ResizeOpen) {
+        let blank = Buffer::empty(Rect::new(
+            0,
+            0,
+            RESIZED_OVERLAY_WIDTH,
+            RESIZED_OVERLAY_HEIGHT,
+        ));
         serialize_ratatui(&blank, &current, true)
     } else {
         serialize_ratatui(&previous, &current, false)

@@ -1,9 +1,9 @@
 # Collection Lab Ratatui Comparison
 
 This package contains matched Ratatui implementations for ArborUI's Collection
-Lab list, table, and scrolling-log experiments. It is excluded from the product
-workspace so Ratatui does not become part of ArborUI's facade-only example
-dependency graph.
+Lab list, table, scrolling-log, and overlay experiments. It is excluded from the
+product workspace so Ratatui does not become part of ArborUI's facade-only
+example dependency graph.
 
 ## Comparison Contract
 
@@ -24,6 +24,13 @@ records, and deterministic producer batches. Both sides construct only the
 visible and overscanned records. It is application policy rather than a
 stabilized log widget.
 
+The overlay workload keeps a stable application stack, adds an opaque scrim, and
+centers a 26x7 confirmation dialog. Opening traps focus in the dialog; forward
+and reverse traversal wrap, and cancel or confirm restores the originating
+background control. The scrim isolates covered pointer targets. ArborUI receives
+real key events through its runtime; the immediate-mode Ratatui adapter applies
+the same focus policy explicitly in application state.
+
 The deterministic contract covers:
 
 - Fixed and variable-height rendering at explicit terminal sizes
@@ -37,6 +44,9 @@ The deterministic contract covers:
 - Table character-frame parity through narrow and wide resizes
 - Bounded scrolling-log history and construction at one million records
 - Follow-tail append, paused append, eviction anchoring, and log-frame parity
+- Overlay focus trap, wrap, restoration, and pointer isolation
+- Exact overlay character and semantic parity at 40x12 normally and 44x14 after
+  resizing while open
 
 The timing benchmark measures a complete logical application turn: update,
 visible-row construction, paint, and logical terminal diff. It excludes model
@@ -73,10 +83,12 @@ production ANSI probes remain separate because each instrumentation layer
 changes the work being measured.
 
 `comparison-output-metrics` passes real ArborUI patches and Ratatui buffer diffs
-through each framework's Crossterm backend under fixed 48x12 ANSI16 conditions.
-It reports bytes presented to the writer, writer callback counts, and flushes.
-Writer callbacks are serializer operations, not operating-system syscall counts.
-The resize case includes Ratatui's production clear before its full draw.
+through each framework's Crossterm backend under fixed ANSI16 conditions. The
+collection workloads use 48x12; the overlay uses 40x12 normally and 44x14 after
+resize. It reports bytes presented to the writer, writer callback counts, and
+flushes. Writer callbacks are serializer operations, not operating-system
+syscall counts. Resize cases include Ratatui's production clear before the full
+draw.
 
 ## First Local Result
 
@@ -232,6 +244,42 @@ Paused append confirms the same no-visible-change behavior as the table's
 offscreen update: ArborUI submits no patch, while Ratatui's empty production
 diff emits reset commands and one flush.
 
+## Overlay Workload Result
+
+The matched overlay uses the stable stack, opaque scrim, centered 26x7 dialog,
+focus and pointer policies described above. Deterministic checks require exact
+character and semantic parity at 40x12 for normal turns and 44x14 for resize
+while open. These are Criterion point estimates and measured ranges from the
+same 2026-07-17 local environment:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Cold initial | 82.9 us (82.70-83.17) | 17.2 us (17.16-17.31) |
+| Open | 117 us (116.0-118.2) | 19.30 us (19.24-19.35) |
+| Focus next | 33.7 us (33.24-34.13) | 13.1 us (12.77-13.39) |
+| Cancel | 83.2 us (82.07-84.39) | 10.62 us (10.55-10.68) |
+| Confirm | 80.05 us (79.85-80.26) | 11.49 us (11.45-11.52) |
+| Background activation | 10.27 us (10.19-10.34) | 6.09 us (6.06-6.13) |
+| Resize while open | 123.2 us (122.8-123.6) | 26.87 us (26.76-26.98) |
+
+The corresponding production serializer result is
+`bytes/writer calls/flushes`. Writer calls are serializer callbacks, not
+operating-system syscalls:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Initial | 4512/3171/1 | 701/428/1 |
+| Open | 4622/3242/1 | 1321/845/1 |
+| Focus next | 226/152/1 | 19/12/1 |
+| Cancel | 4512/3171/1 | 955/668/1 |
+| Confirm | 4512/3171/1 | 955/668/1 |
+| Background activation | 0/0/0 | 19/12/1 |
+| Resize while open | 5792/4058/1 | 1533/1018/2 |
+
+Background activation changes application state without changing visible
+content. ArborUI therefore suppresses backend output; Ratatui completes its
+immediate-mode draw and emits the empty-diff reset sequence.
+
 ## Allocation And Retained Memory
 
 `comparison-memory-metrics` runs every case in a separate release-mode process
@@ -293,6 +341,22 @@ bytes`:
 | Offscreen background update | 134,048/69,748 | 217,572/8 |
 | Unchanged redraw | 134,040/69,740 | 225,740/0 |
 
+The overlay model allocates zero bytes on both sides. Initial-render retained
+framework memory is 79,092 bytes for ArborUI and 69,120 bytes for Ratatui. For
+action rows, retained bytes are incremental allocations still live at sample
+capture, not total process memory; each baseline is built before profiling:
+
+| Scenario | ArborUI retained | Ratatui retained |
+| --- | ---: | ---: |
+| Open | 58,828 | 0 |
+| Focus next | 36,260 | 0 |
+| Cancel | 58,860 | 0 |
+| Confirm | 58,860 | 0 |
+| Background activation | 30,828 | 0 |
+| Resize while open | 101,348 | 138,240 |
+
+Ratatui's resize result retains its resized double buffer.
+
 ## ArborUI Phase Attribution
 
 ArborUI exposes opt-in timings for view construction, staged reconciliation,
@@ -344,6 +408,21 @@ Paused append performs the shared record-formatting and storage update but
 reconciles to unchanged visible content, skips layout, and reuses committed
 logical output. Follow-tail append changes the visible window and follows the
 normal layout and paint path.
+
+The overlay phase report shows every measured ArborUI phase in nanoseconds:
+
+| Scenario | Update | View | Stage | Layout | Paint | Diff | Commit | Post | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Initial | 0 | 1,502 | 2,331 | 25,289 | 30,664 | 11,936 | 4,420 | 861 | 77,772 |
+| Open | 455 | 2,770 | 4,445 | 48,096 | 42,630 | 13,272 | 4,445 | 1,579 | 118,736 |
+| Focus next | 3,681 | 2,199 | 3,926 | 0 | 15,873 | 2,790 | 2,906 | 1,337 | 31,384 |
+| Cancel | 2,899 | 1,519 | 3,209 | 23,765 | 28,278 | 13,330 | 5,357 | 920 | 77,110 |
+| Confirm | 3,056 | 1,376 | 3,247 | 24,812 | 28,919 | 13,246 | 5,500 | 885 | 78,697 |
+| Background | 309 | 1,049 | 1,897 | 0 | 987 | 1,878 | 3,395 | 638 | 11,118 |
+| Resize open | 2,652 | 2,495 | 5,383 | 43,649 | 48,179 | 13,670 | 4,724 | 1,436 | 120,647 |
+
+Structural overlay turns expose layout, paint, and serialization costs. Focus
+movement and unchanged background activation take the no-layout path.
 
 Ordinary preparation skips layout when reconciliation reports only paint or no
 changes. Paint-only work against the exact committed renderer generation clones

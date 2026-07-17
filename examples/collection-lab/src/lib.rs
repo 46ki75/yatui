@@ -1,9 +1,15 @@
 //! Fixed and variable-height visible-range experiments using only `arborui`.
 
 mod log;
+mod overlay;
 mod table;
 
 pub use log::{LogAction, LogLab, LogModel, LogRecord, log_viewport_height};
+
+pub use overlay::{
+    OVERLAY_BACKGROUND_KEY, OVERLAY_CANCEL_KEY, OVERLAY_CONFIRM_KEY, OVERLAY_OPEN_KEY,
+    OverlayAction, OverlayLab, OverlayModel,
+};
 
 pub use table::{
     TableAction, TableColumns, TableLab, TableModel, TableRecord, table_viewport_height,

@@ -1,9 +1,51 @@
 //! Application evidence through the public ArborUI facades.
 
 use arborui_example_collection_lab::{
-    CollectionLab, CollectionMode, LogAction, LogLab, Message, TableAction, TableLab,
+    CollectionLab, CollectionMode, LogAction, LogLab, Message, OVERLAY_CANCEL_KEY,
+    OVERLAY_CONFIRM_KEY, OVERLAY_OPEN_KEY, OverlayAction, OverlayLab, TableAction, TableLab,
 };
 use arborui_test::{Key, KeyCode, Point, Size, TestApp};
+
+#[test]
+fn overlay_traps_focus_and_restores_the_open_control() {
+    let mut application = TestApp::new(OverlayLab::new(40, 12), Size::new(40, 12));
+    assert_eq!(application.focused_key(), Some(Key::from(OVERLAY_OPEN_KEY)));
+
+    application.key(KeyCode::Enter);
+    assert!(application.application().model().dialog_open());
+    assert_eq!(
+        application.focused_key(),
+        Some(Key::from(OVERLAY_CONFIRM_KEY))
+    );
+    application.key(KeyCode::Tab);
+    assert_eq!(
+        application.focused_key(),
+        Some(Key::from(OVERLAY_CANCEL_KEY))
+    );
+    application.key(KeyCode::Tab);
+    assert_eq!(
+        application.focused_key(),
+        Some(Key::from(OVERLAY_CONFIRM_KEY))
+    );
+
+    application.key(KeyCode::Escape);
+    assert!(!application.application().model().dialog_open());
+    assert_eq!(application.focused_key(), Some(Key::from(OVERLAY_OPEN_KEY)));
+}
+
+#[test]
+fn overlay_scrim_blocks_the_background_control() {
+    let mut application = TestApp::new(OverlayLab::new(40, 12), Size::new(40, 12));
+    application.send(OverlayAction::Open);
+
+    application.click(Point::new(4, 5));
+
+    assert!(application.application().model().dialog_open());
+    assert_eq!(
+        application.application().model().background_activations(),
+        0
+    );
+}
 
 #[test]
 fn scrolling_log_is_bounded_and_paused_appends_preserve_the_view() {
