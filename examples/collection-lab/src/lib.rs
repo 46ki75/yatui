@@ -3,6 +3,7 @@
 mod log;
 mod overlay;
 mod table;
+mod unicode;
 
 pub use log::{LogAction, LogLab, LogModel, LogRecord, log_viewport_height};
 
@@ -14,6 +15,8 @@ pub use overlay::{
 pub use table::{
     TableAction, TableColumns, TableLab, TableModel, TableRecord, table_viewport_height,
 };
+
+pub use unicode::{UnicodeAction, UnicodeLab, UnicodeModel};
 
 use std::{cell::Cell, num::NonZeroUsize};
 

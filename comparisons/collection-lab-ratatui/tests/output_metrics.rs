@@ -10,12 +10,12 @@ use arborui::{
 };
 use arborui_comparison_collection_lab_ratatui::{
     ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
-    draw_test_log_terminal, draw_test_overlay_terminal, draw_test_table_terminal,
-    draw_test_terminal,
+    RatatuiUnicodeLab, draw_test_log_terminal, draw_test_overlay_terminal,
+    draw_test_table_terminal, draw_test_terminal,
 };
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
-    TableAction, TableLab,
+    TableAction, TableLab, UnicodeAction, UnicodeLab,
 };
 use arborui_test::{KeyCode, Size as ArboruiSize, TestApp};
 use ratatui::{
@@ -33,6 +33,10 @@ const OVERLAY_WIDTH: u16 = 40;
 const OVERLAY_HEIGHT: u16 = 12;
 const RESIZED_OVERLAY_WIDTH: u16 = 44;
 const RESIZED_OVERLAY_HEIGHT: u16 = 14;
+const UNICODE_WIDTH: u16 = 36;
+const UNICODE_HEIGHT: u16 = 10;
+const NARROW_UNICODE_WIDTH: u16 = 30;
+const SHIFT_BOUNDARY_OFFSET: usize = 15;
 
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
@@ -73,6 +77,32 @@ enum OverlayScenario {
     Confirm,
     BackgroundActivation,
     ResizeOpen,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum UnicodeScenario {
+    InitialRender,
+    ShiftBoundary,
+    ReplaceWide,
+    ResizeNarrow,
+}
+
+impl UnicodeScenario {
+    const ALL: [Self; 4] = [
+        Self::InitialRender,
+        Self::ShiftBoundary,
+        Self::ReplaceWide,
+        Self::ResizeNarrow,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::InitialRender => "initial-render",
+            Self::ShiftBoundary => "shift-boundary",
+            Self::ReplaceWide => "replace-wide",
+            Self::ResizeNarrow => "resize-narrow",
+        }
+    }
 }
 
 impl OverlayScenario {
@@ -329,6 +359,42 @@ fn reports_overlay_ansi_output_metrics() {
     }
 }
 
+#[test]
+fn reports_unicode_ansi_output_metrics() {
+    println!("| Scenario | Framework | ANSI bytes | Writer calls | Flushes |");
+    println!("| --- | --- | ---: | ---: | ---: |");
+
+    for scenario in UnicodeScenario::ALL {
+        let arborui = arborui_unicode_metrics(scenario);
+        let ratatui = ratatui_unicode_metrics(scenario);
+        println!(
+            "| {} | ArborUI | {} | {} | {} |",
+            scenario.name(),
+            arborui.bytes,
+            arborui.writes,
+            arborui.flushes
+        );
+        println!(
+            "| {} | Ratatui | {} | {} | {} |",
+            scenario.name(),
+            ratatui.bytes,
+            ratatui.writes,
+            ratatui.flushes
+        );
+
+        if !matches!(scenario, UnicodeScenario::ShiftBoundary) {
+            assert!(arborui.bytes > 0);
+            assert!(ratatui.bytes > 0);
+        }
+        let expected_ratatui_flushes = if matches!(scenario, UnicodeScenario::ResizeNarrow) {
+            2
+        } else {
+            1
+        };
+        assert_eq!(ratatui.flushes, expected_ratatui_flushes);
+    }
+}
+
 fn arborui_metrics(mode: CollectionMode, scenario: Scenario) -> OutputMetrics {
     let mut application = TestApp::new(
         CollectionLab::new(mode, ITEM_COUNT, usize::from(HEIGHT - 4)),
@@ -494,6 +560,38 @@ fn arborui_overlay_metrics(scenario: OverlayScenario) -> OutputMetrics {
                 ));
             }
             OverlayScenario::InitialRender => unreachable!("initial render handled above"),
+        }
+        application.frame_patches().get(previous_count).cloned()
+    };
+    patch.map_or_else(OutputMetrics::default, |patch| serialize_arborui(&patch))
+}
+
+fn arborui_unicode_metrics(scenario: UnicodeScenario) -> OutputMetrics {
+    let mut application = TestApp::new(
+        UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+        ArboruiSize::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+    );
+    if matches!(scenario, UnicodeScenario::ShiftBoundary) {
+        for _ in 0..SHIFT_BOUNDARY_OFFSET {
+            application.send(UnicodeAction::ShiftRight);
+        }
+    }
+
+    let patch = if matches!(scenario, UnicodeScenario::InitialRender) {
+        application.last_frame_patch().cloned()
+    } else {
+        let previous_count = application.frame_patches().len();
+        match scenario {
+            UnicodeScenario::ShiftBoundary => {
+                application.send(UnicodeAction::ShiftRight);
+            }
+            UnicodeScenario::ReplaceWide => {
+                application.send(UnicodeAction::ReplaceWide);
+            }
+            UnicodeScenario::ResizeNarrow => {
+                application.resize(ArboruiSize::new(NARROW_UNICODE_WIDTH, UNICODE_HEIGHT));
+            }
+            UnicodeScenario::InitialRender => unreachable!("initial render handled above"),
         }
         application.frame_patches().get(previous_count).cloned()
     };
@@ -728,6 +826,62 @@ fn ratatui_overlay_metrics(scenario: OverlayScenario) -> OutputMetrics {
     } else {
         serialize_ratatui(&previous, &current, false)
     }
+}
+
+fn ratatui_unicode_metrics(scenario: UnicodeScenario) -> OutputMetrics {
+    let mut application = RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+    let mut terminal = Terminal::new(TestBackend::new(UNICODE_WIDTH, UNICODE_HEIGHT))
+        .expect("test terminal must open");
+    let initial = draw_ratatui_unicode_buffer(&mut terminal, &application);
+
+    if matches!(scenario, UnicodeScenario::InitialRender) {
+        let blank = Buffer::empty(Rect::new(0, 0, UNICODE_WIDTH, UNICODE_HEIGHT));
+        return serialize_ratatui(&blank, &initial, false);
+    }
+    let mut previous = initial;
+    if matches!(scenario, UnicodeScenario::ShiftBoundary) {
+        for _ in 0..SHIFT_BOUNDARY_OFFSET {
+            application.apply(UnicodeAction::ShiftRight);
+            previous = draw_ratatui_unicode_buffer(&mut terminal, &application);
+        }
+    }
+
+    match scenario {
+        UnicodeScenario::ShiftBoundary => {
+            application.apply(UnicodeAction::ShiftRight);
+        }
+        UnicodeScenario::ReplaceWide => {
+            application.apply(UnicodeAction::ReplaceWide);
+        }
+        UnicodeScenario::ResizeNarrow => {
+            terminal
+                .backend_mut()
+                .resize(NARROW_UNICODE_WIDTH, UNICODE_HEIGHT);
+            application.apply(UnicodeAction::Resize {
+                width: NARROW_UNICODE_WIDTH,
+                height: UNICODE_HEIGHT,
+            });
+        }
+        UnicodeScenario::InitialRender => unreachable!("initial render returned above"),
+    }
+    let current = draw_ratatui_unicode_buffer(&mut terminal, &application);
+    if matches!(scenario, UnicodeScenario::ResizeNarrow) {
+        let blank = Buffer::empty(Rect::new(0, 0, NARROW_UNICODE_WIDTH, UNICODE_HEIGHT));
+        serialize_ratatui(&blank, &current, true)
+    } else {
+        serialize_ratatui(&previous, &current, false)
+    }
+}
+
+fn draw_ratatui_unicode_buffer(
+    terminal: &mut Terminal<TestBackend>,
+    application: &RatatuiUnicodeLab,
+) -> Buffer {
+    terminal
+        .draw(|frame| application.render(frame))
+        .expect("Unicode frame must draw")
+        .buffer
+        .clone()
 }
 
 fn print_metrics(

@@ -2,9 +2,10 @@
 
 use std::{convert::Infallible, num::NonZeroUsize};
 
+use arborui::{WidthPolicy, graphemes};
 use arborui_example_collection_lab::{
     CollectionMode, FixedHeightProvider, LogAction, LogModel, OverlayAction, OverlayModel,
-    TableAction, TableModel, VariableHeightProvider, VisibleRange,
+    TableAction, TableModel, UnicodeAction, UnicodeModel, VariableHeightProvider, VisibleRange,
 };
 use ratatui::{
     Frame, Terminal,
@@ -20,6 +21,7 @@ const OVERSCAN_CELLS: usize = 3;
 const HEADER: &str = "Arrows/Page/Home/End move | Enter selects | v mode | r reverse | q quit";
 const TABLE_HEADER: &str = "Arrows/Page/Home/End move | Enter selects | u updates | q quit";
 const LOG_HEADER: &str = "Up/Down/Page/Home/End scroll | a appends | q quit";
+const UNICODE_HEADER: &str = "Arrows shift | r replace | q quit";
 
 /// One framework-neutral action in the matched scenario.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +134,17 @@ pub struct OverlaySemanticState {
     pub focus: OverlayFocus,
 }
 
+/// Observable state of the matched Unicode clipping workload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnicodeSemanticState {
+    /// Controlled horizontal cell offset.
+    pub offset: usize,
+    /// Whether the replacement row contains its width-two glyph.
+    pub replacement_is_wide: bool,
+    /// Complete terminal dimensions.
+    pub terminal_size: (u16, u16),
+}
+
 #[derive(Clone, Debug)]
 struct Item {
     key: u64,
@@ -171,6 +184,11 @@ pub struct RatatuiLogLab {
 pub struct RatatuiOverlayLab {
     model: OverlayModel,
     focus: OverlayFocus,
+}
+
+/// Ratatui adapter around the framework-neutral Unicode clipping model.
+pub struct RatatuiUnicodeLab {
+    model: UnicodeModel,
 }
 
 /// Logical test backend that records Ratatui's diff output work.
@@ -925,6 +943,88 @@ impl RatatuiOverlayLab {
     }
 }
 
+impl RatatuiUnicodeLab {
+    /// Creates the deterministic Unicode workload at explicit terminal dimensions.
+    #[must_use]
+    pub fn new(width: u16, height: u16) -> Self {
+        Self {
+            model: UnicodeModel::new(width, height),
+        }
+    }
+
+    /// Applies one deterministic application action without drawing.
+    pub fn apply(&mut self, action: UnicodeAction) -> bool {
+        self.model.apply(action)
+    }
+
+    /// Returns the dimensions expected by the next draw.
+    #[must_use]
+    pub const fn terminal_size(&self) -> (u16, u16) {
+        self.model.terminal_size()
+    }
+
+    /// Returns the shared application model.
+    #[must_use]
+    pub const fn model(&self) -> &UnicodeModel {
+        &self.model
+    }
+
+    /// Returns current observable application state.
+    #[must_use]
+    pub const fn semantic_state(&self) -> UnicodeSemanticState {
+        UnicodeSemanticState {
+            offset: self.model.offset(),
+            replacement_is_wide: self.model.replacement_is_wide(),
+            terminal_size: self.model.terminal_size(),
+        }
+    }
+
+    /// Paints one complete desired Unicode clipping frame.
+    pub fn render(&self, frame: &mut Frame<'_>) {
+        let area = frame.area();
+        let buffer = frame.buffer_mut();
+        paint_clipped(buffer, area.x, area.y, UNICODE_HEADER, Style::default());
+        if area.width == 0 || area.height < 2 {
+            return;
+        }
+
+        let panel = Rect::new(
+            area.x,
+            area.y.saturating_add(1),
+            area.width,
+            9.min(area.height - 1),
+        );
+        paint_block(
+            buffer,
+            panel,
+            "Unicode cell clipping",
+            Style::new().fg(Color::LightCyan),
+        );
+        let content_width = panel.width.saturating_sub(2);
+        let content_x = panel.x.saturating_add(1);
+        for (index, row) in self.model.rows().iter().enumerate() {
+            let y = panel
+                .y
+                .saturating_add(1)
+                .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
+            if y >= panel.bottom().saturating_sub(1) {
+                break;
+            }
+            for x in content_x..content_x.saturating_add(content_width) {
+                buffer[(x, y)].set_symbol(" ");
+            }
+            paint_unicode_clipped(
+                buffer,
+                content_x,
+                y,
+                row,
+                self.model.offset(),
+                content_width,
+            );
+        }
+    }
+}
+
 /// Draws one application frame into Ratatui's logical test terminal.
 pub fn draw_test_frame(
     terminal: &mut Terminal<TestBackend>,
@@ -1029,6 +1129,32 @@ pub fn draw_overlay_terminal<B: Backend>(
     Ok(())
 }
 
+/// Draws one Unicode frame into Ratatui's logical test terminal.
+pub fn draw_test_unicode_frame(
+    terminal: &mut Terminal<TestBackend>,
+    application: &RatatuiUnicodeLab,
+) -> Result<String, Infallible> {
+    let completed = terminal.draw(|frame| application.render(frame))?;
+    Ok(buffer_unicode_characters(completed.buffer))
+}
+
+/// Draws the Unicode workload without materializing a character snapshot.
+pub fn draw_test_unicode_terminal(
+    terminal: &mut Terminal<TestBackend>,
+    application: &RatatuiUnicodeLab,
+) -> Result<(), Infallible> {
+    draw_unicode_terminal(terminal, application)
+}
+
+/// Draws one complete Unicode frame through any Ratatui backend.
+pub fn draw_unicode_terminal<B: Backend>(
+    terminal: &mut Terminal<B>,
+    application: &RatatuiUnicodeLab,
+) -> Result<(), B::Error> {
+    terminal.draw(|frame| application.render(frame))?;
+    Ok(())
+}
+
 /// Converts a Ratatui buffer to ArborUI's full-width character snapshot format.
 #[must_use]
 pub fn buffer_characters(buffer: &Buffer) -> String {
@@ -1040,6 +1166,26 @@ pub fn buffer_characters(buffer: &Buffer) -> String {
         }
         for x in area.left()..area.right() {
             output.push_str(buffer[(x, y)].symbol());
+        }
+    }
+    output
+}
+
+fn buffer_unicode_characters(buffer: &Buffer) -> String {
+    let area = buffer.area;
+    let mut output = String::new();
+    for y in area.top()..area.bottom() {
+        if y != area.top() {
+            output.push('\n');
+        }
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buffer[(x, y)].symbol();
+            output.push_str(symbol);
+            let width = graphemes(symbol, WidthPolicy::Unicode)
+                .next()
+                .map_or(1, |grapheme| grapheme.width.max(1));
+            x = x.saturating_add(u16::try_from(width).unwrap_or(u16::MAX));
         }
     }
     output
@@ -1112,4 +1258,36 @@ fn paint_clipped_width(buffer: &mut Buffer, x: u16, y: u16, text: &str, width: u
     }
     let width = width.min(buffer.area.right().saturating_sub(x));
     buffer.set_stringn(x, y, text, usize::from(width), style);
+}
+
+fn paint_unicode_clipped(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    value: &str,
+    offset: usize,
+    width: u16,
+) {
+    let mut logical_x = 0usize;
+    for grapheme in graphemes(value, WidthPolicy::Unicode) {
+        let width_of_grapheme = grapheme.width;
+        let end = logical_x.saturating_add(width_of_grapheme);
+        if logical_x >= offset {
+            let screen_x = logical_x.saturating_sub(offset);
+            if screen_x.saturating_add(width_of_grapheme) > usize::from(width) {
+                break;
+            }
+            buffer.set_stringn(
+                x.saturating_add(u16::try_from(screen_x).unwrap_or(u16::MAX)),
+                y,
+                grapheme.text,
+                width_of_grapheme,
+                Style::new(),
+            );
+        }
+        logical_x = end;
+        if logical_x.saturating_sub(offset) >= usize::from(width) {
+            break;
+        }
+    }
 }

@@ -111,6 +111,12 @@ control. Covered pointer targets cannot activate. ArborUI receives real key
 events through the runtime; because Ratatui is immediate-mode, its adapter
 implements the same focus policy explicitly in application state.
 
+The sixth slice adds matched Unicode-heavy rows with combining, CJK, ZWJ emoji,
+flag, variation-selector, and ambiguous-width content. Controlled cell offsets
+cut through a wide grapheme at the left viewport edge, while a separate update
+replaces a width-two glyph with width-one ASCII. Both adapters share the model
+and require complete-grapheme clipping.
+
 ## Deterministic Evidence
 
 The public application harness verifies:
@@ -158,6 +164,10 @@ The public application harness verifies:
 - Matched overlay tests prove focus trapping, wrapping, restoration, and pointer
   isolation with exact character and semantic parity at 40x12 normally and
   44x14 after resizing while open.
+- Matched Unicode tests prove exact character and semantic parity through a
+  boundary-cutting shift, wide-to-narrow replacement, and narrow and wide
+  resizes. Public facade tests inspect the leading and continuation cells after
+  clipping.
 
 One optimized Criterion run on 2026-07-17 measured fixed-height lookup at
 approximately 6.6, 7.0, and 7.0 nanoseconds for those sizes. Variable-height
@@ -353,6 +363,25 @@ order is 0/1502/2331/25289/30664/11936/4420/861 ns initially,
 2652/2495/5383/43649/48179/13670/4724/1436 ns. Their measured totals are
 77,772, 118,736, 31,384, 77,110, 78,697, 11,118, and 120,647 ns respectively.
 
+The completed Unicode workload measures cold initial, a shift from offset 15 to
+16 that cuts the first CJK grapheme, wide-to-narrow replacement, and resize from
+36x10 to 30x10. Criterion measured ArborUI/Ratatui at 106.2/24.48 microseconds
+initially, 74.79/13.62 for the shift, 68.78/18.80 for replacement, and
+76.65/15.52 for resize. Ratatui replacement varied widely from 12.78 to 27.36
+microseconds, so its point estimate is not treated as precise.
+
+Production output in `bytes/writer calls/flushes` is 3307/2340/1 versus
+1016/664/1 initially, 737/580/1 versus 196/166/1 for the boundary shift,
+125/88/1 versus 44/33/1 for replacement, and 2797/1980/1 versus 947/624/2 for
+resize. The shared model retains 396 bytes on both sides. Initial-render retained
+framework memory is 62,268 bytes for ArborUI and 51,840 for Ratatui.
+
+ArborUI Unicode phase totals are 106,794 ns initially, 81,016 for the boundary
+shift, 82,964 for replacement, and 90,305 for resize. Paint is the largest named
+phase in every case, but all three action turns also perform layout; resize-storm
+and live-ingress evidence remain necessary before selecting another local
+optimization.
+
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
 generated transitions, comparing patches, complete buffers, hit maps, retained
@@ -444,6 +473,12 @@ and serialization costs, while focus movement and unchanged background
 activation use no-layout paths. No optimization is selected yet; the remaining
 workloads must establish whether these costs generalize.
 
+The Unicode evidence confirms atomic clipping and wide-to-narrow cleanup through
+the public application boundary. Its active turns show the same layout-and-paint
+shape as structural overlay work, with paint dominant in the phase report. This
+closes the planned Unicode-heavy evidence slice without changing the renderer;
+it does not yet establish behavior under repeated resize churn or queue latency.
+
 ## Limits And Next Evidence
 
 This slice does not complete the production-scale proof. It leaves these
@@ -465,7 +500,9 @@ viewport anchoring through eviction, deterministic append batches, and flat
 construction through one million records. Paused append skips ArborUI layout
 and backend output, while active scrolling remains substantially faster in the
 direct Ratatui adapter. The matched overlay slice adds exact modal character and
-semantic parity plus latency, output, memory, and phase evidence. Unicode
-grapheme stress, resize storms, and live ingress should establish whether the
-same bottlenecks generalize before another local optimization. Select and
-reusable table requirements can extend the pilot separately.
+semantic parity plus latency, output, memory, and phase evidence. The matched
+Unicode slice adds combining, wide, joined, flag, variation-selector, and
+ambiguous content at clipping boundaries. Resize storms and live ingress should
+establish whether the same bottlenecks generalize before another local
+optimization. Select and reusable table requirements can extend the pilot
+separately.

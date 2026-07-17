@@ -41,6 +41,16 @@ const OVERLAY_ACTIONS: [&str; 7] = [
     "resize-open",
 ];
 const OVERLAY_ITEM_COUNT: usize = 1;
+const UNICODE_ACTIONS: [&str; 7] = [
+    "model",
+    "cold",
+    "initial-render",
+    "shift-boundary",
+    "replace-wide",
+    "resize-narrow",
+    "unchanged-redraw",
+];
+const UNICODE_ITEM_COUNT: usize = 1;
 
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
@@ -129,6 +139,12 @@ fn reports_isolated_memory_metrics() {
             let metrics = run_probe(framework, "overlay", scenario, OVERLAY_ITEM_COUNT);
             assert_released(framework, "overlay", scenario, metrics);
             print_metrics(framework, "overlay", scenario, OVERLAY_ITEM_COUNT, metrics);
+        }
+
+        for scenario in UNICODE_ACTIONS {
+            let metrics = run_probe(framework, "unicode", scenario, UNICODE_ITEM_COUNT);
+            assert_released(framework, "unicode", scenario, metrics);
+            print_metrics(framework, "unicode", scenario, UNICODE_ITEM_COUNT, metrics);
         }
     }
 }

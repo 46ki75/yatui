@@ -8,7 +8,7 @@ use arborui::{
 };
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
-    TableAction, TableLab,
+    TableAction, TableLab, UnicodeAction, UnicodeLab,
 };
 
 const ITEM_COUNT: usize = 100_000;
@@ -19,6 +19,10 @@ const OVERLAY_WIDTH: u16 = 40;
 const OVERLAY_HEIGHT: u16 = 12;
 const OVERLAY_RESIZED_WIDTH: u16 = 44;
 const OVERLAY_RESIZED_HEIGHT: u16 = 14;
+const UNICODE_WIDTH: u16 = 36;
+const UNICODE_HEIGHT: u16 = 10;
+const NARROW_UNICODE_WIDTH: u16 = 30;
+const SHIFT_BOUNDARY_OFFSET: usize = 15;
 const SAMPLES: u32 = 100;
 const INITIAL_SAMPLES: u32 = 20;
 
@@ -57,6 +61,25 @@ enum OverlayScenario {
     Confirm,
     BackgroundActivation,
     ResizeOpen,
+}
+
+#[derive(Clone, Copy)]
+enum UnicodeScenario {
+    ShiftBoundary,
+    ReplaceWide,
+    ResizeNarrow,
+}
+
+impl UnicodeScenario {
+    const ALL: [Self; 3] = [Self::ShiftBoundary, Self::ReplaceWide, Self::ResizeNarrow];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ShiftBoundary => "shift-boundary",
+            Self::ReplaceWide => "replace-wide",
+            Self::ResizeNarrow => "resize-narrow",
+        }
+    }
 }
 
 impl OverlayScenario {
@@ -229,6 +252,142 @@ fn reports_arborui_overlay_phase_metrics() {
             SAMPLES,
         );
     }
+}
+
+#[test]
+#[ignore = "runs the optimized Unicode phase measurement matrix"]
+fn reports_arborui_unicode_phase_metrics() {
+    println!(
+        "| Workload | Scenario | Update ns | View ns | Stage/reconcile ns | Layout ns | Paint ns | Diff ns | Commit ns | Post-commit ns | Render total ns |"
+    );
+    println!("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+
+    print_workload_totals(
+        "Unicode",
+        "initial-render",
+        measure_unicode_initial_render(),
+        INITIAL_SAMPLES,
+    );
+    for scenario in UnicodeScenario::ALL {
+        print_workload_totals(
+            "Unicode",
+            scenario.name(),
+            measure_unicode_scenario(scenario),
+            SAMPLES,
+        );
+    }
+}
+
+fn measure_unicode_initial_render() -> Totals {
+    let mut totals = Totals::default();
+    for _ in 0..INITIAL_SAMPLES {
+        let mut runner = new_unicode_runner();
+        let rendered = runner
+            .render_headless_timed()
+            .expect("initial Unicode frame must render");
+        assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+        add_timings(
+            &mut totals.render,
+            rendered.timings.expect("render must include timings"),
+        );
+    }
+    totals
+}
+
+fn measure_unicode_scenario(scenario: UnicodeScenario) -> Totals {
+    let mut runner = new_unicode_runner();
+    assert_eq!(
+        runner
+            .render_headless()
+            .expect("initial Unicode frame must render"),
+        HeadlessRenderOutcome::Committed
+    );
+    if matches!(scenario, UnicodeScenario::ShiftBoundary) {
+        prepare_unicode_shift_boundary(&mut runner);
+    }
+
+    let mut totals = Totals::default();
+    for _ in 0..SAMPLES {
+        let update_started = Instant::now();
+        apply_unicode_scenario(&mut runner, scenario);
+        totals.update = totals.update.saturating_add(update_started.elapsed());
+        let rendered = runner
+            .render_headless_timed()
+            .expect("Unicode scenario frame must render");
+        assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+        add_timings(
+            &mut totals.render,
+            rendered.timings.expect("render must include timings"),
+        );
+        reset_unicode_scenario(&mut runner, scenario);
+    }
+    totals
+}
+
+fn apply_unicode_scenario(runner: &mut AppRunner<UnicodeLab>, scenario: UnicodeScenario) {
+    match scenario {
+        UnicodeScenario::ShiftBoundary => send_unicode(runner, UnicodeAction::ShiftRight),
+        UnicodeScenario::ReplaceWide => send_unicode(runner, UnicodeAction::ReplaceWide),
+        UnicodeScenario::ResizeNarrow => {
+            resize_unicode(runner, NARROW_UNICODE_WIDTH, UNICODE_HEIGHT)
+        }
+    }
+}
+
+fn reset_unicode_scenario(runner: &mut AppRunner<UnicodeLab>, scenario: UnicodeScenario) {
+    match scenario {
+        UnicodeScenario::ShiftBoundary => {
+            for _ in 0..=SHIFT_BOUNDARY_OFFSET {
+                send_unicode(runner, UnicodeAction::ShiftLeft);
+            }
+            prepare_unicode_shift_boundary(runner);
+        }
+        UnicodeScenario::ReplaceWide => {
+            send_unicode(runner, UnicodeAction::ReplaceWide);
+            render_unicode_reset(runner);
+        }
+        UnicodeScenario::ResizeNarrow => {
+            resize_unicode(runner, UNICODE_WIDTH, UNICODE_HEIGHT);
+            render_unicode_reset(runner);
+        }
+    }
+}
+
+fn prepare_unicode_shift_boundary(runner: &mut AppRunner<UnicodeLab>) {
+    for _ in 0..SHIFT_BOUNDARY_OFFSET {
+        send_unicode(runner, UnicodeAction::ShiftRight);
+    }
+    render_unicode_reset(runner);
+}
+
+fn send_unicode(runner: &mut AppRunner<UnicodeLab>, action: UnicodeAction) {
+    runner.enqueue(action);
+    runner.process_pending();
+}
+
+fn resize_unicode(runner: &mut AppRunner<UnicodeLab>, width: u16, height: u16) {
+    runner
+        .dispatch_ui_event(UiEvent::Resize(Size::new(width, height)))
+        .expect("Unicode resize event must dispatch");
+    runner.process_pending();
+}
+
+fn render_unicode_reset(runner: &mut AppRunner<UnicodeLab>) {
+    assert_eq!(
+        runner
+            .render_headless()
+            .expect("Unicode reset frame must render"),
+        HeadlessRenderOutcome::Committed
+    );
+}
+
+fn new_unicode_runner() -> AppRunner<UnicodeLab> {
+    let size = Size::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+    AppRunner::new(
+        UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+        size,
+        Renderer::new(size, Capabilities::default().width_policy),
+    )
 }
 
 fn measure_overlay_initial_render() -> Totals {

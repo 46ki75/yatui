@@ -502,8 +502,12 @@ producer appends. The completed matched overlay workload adds a stable stack,
 opaque scrim, centered dialog, focus trap with wrap and restoration, pointer
 isolation, exact character and semantic parity, normal and resize-open evidence,
 production output counts, retained-memory measurements, and ArborUI phase
-attribution. Unicode grapheme stress, resize storms, live ingress, and
-finer-grained incremental work remain open.
+attribution. The completed matched Unicode
+workload adds combining, CJK, ZWJ emoji, flag, variation-selector, and ambiguous
+content; atomic wide-grapheme boundary clipping; wide-to-narrow replacement;
+exact semantic and character parity through resize; and latency, production
+output, retained-memory, and ArborUI phase evidence. Resize storms, live ingress,
+and finer-grained incremental work remain open.
 
 Deliver:
 

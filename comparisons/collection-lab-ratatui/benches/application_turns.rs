@@ -4,12 +4,12 @@ use std::{hint::black_box, time::Duration};
 
 use arborui_comparison_collection_lab_ratatui::{
     ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
-    draw_test_log_terminal, draw_test_overlay_terminal, draw_test_table_terminal,
-    draw_test_terminal,
+    RatatuiUnicodeLab, draw_test_log_terminal, draw_test_overlay_terminal,
+    draw_test_table_terminal, draw_test_terminal, draw_test_unicode_terminal,
 };
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
-    TableAction, TableLab,
+    TableAction, TableLab, UnicodeAction, UnicodeLab,
 };
 use arborui_test::{KeyCode, Size, TestApp};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -23,6 +23,10 @@ const OVERLAY_WIDTH: u16 = 40;
 const OVERLAY_HEIGHT: u16 = 12;
 const OVERLAY_RESIZED_WIDTH: u16 = 44;
 const OVERLAY_RESIZED_HEIGHT: u16 = 14;
+const UNICODE_WIDTH: u16 = 36;
+const UNICODE_HEIGHT: u16 = 10;
+const UNICODE_NARROW_WIDTH: u16 = 30;
+const UNICODE_BOUNDARY_OFFSET: usize = 15;
 
 #[derive(Clone, Copy)]
 enum Scenario {
@@ -59,6 +63,25 @@ enum OverlayScenario {
     Confirm,
     BackgroundActivation,
     ResizeOpen,
+}
+
+#[derive(Clone, Copy)]
+enum UnicodeScenario {
+    ShiftBoundary,
+    ReplaceWide,
+    ResizeNarrow,
+}
+
+impl UnicodeScenario {
+    const ALL: [Self; 3] = [Self::ShiftBoundary, Self::ReplaceWide, Self::ResizeNarrow];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ShiftBoundary => "shift-boundary",
+            Self::ReplaceWide => "replace-wide",
+            Self::ResizeNarrow => "resize-narrow",
+        }
+    }
 }
 
 impl OverlayScenario {
@@ -155,6 +178,74 @@ fn application_turns(criterion: &mut Criterion) {
     log_scenario_turns(criterion);
     overlay_cold_initial_render(criterion);
     overlay_scenario_turns(criterion);
+    unicode_cold_initial_render(criterion);
+    unicode_scenario_turns(criterion);
+}
+
+fn unicode_cold_initial_render(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("comparison/unicode-turn/cold-initial-render");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("arborui", |bencher| {
+        bencher.iter(|| {
+            black_box(TestApp::new(
+                UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+                unicode_size(),
+            ));
+        });
+    });
+    group.bench_function("ratatui", |bencher| {
+        bencher.iter(|| {
+            let application = RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+            let mut terminal = Terminal::new(TestBackend::new(UNICODE_WIDTH, UNICODE_HEIGHT))
+                .expect("test terminal must open");
+            draw_test_unicode_terminal(&mut terminal, &application)
+                .expect("initial Unicode frame must draw");
+            black_box((application, terminal));
+        });
+    });
+    group.finish();
+}
+
+fn unicode_scenario_turns(criterion: &mut Criterion) {
+    for scenario in UnicodeScenario::ALL {
+        let mut group =
+            criterion.benchmark_group(format!("comparison/unicode-turn/{}", scenario.name()));
+        group.throughput(Throughput::Elements(1));
+        group.bench_function("arborui", |bencher| {
+            let mut application = TestApp::new(
+                UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+                unicode_size(),
+            );
+            prepare_arborui_unicode(&mut application, scenario);
+            bencher.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let started = std::time::Instant::now();
+                    arborui_unicode_turn(&mut application, scenario);
+                    elapsed = elapsed.saturating_add(started.elapsed());
+                    reset_arborui_unicode(&mut application, scenario);
+                }
+                black_box(application.application().model().terminal_size());
+                elapsed
+            });
+        });
+        group.bench_function("ratatui", |bencher| {
+            let (mut application, mut terminal) = ratatui_unicode_fixture();
+            prepare_ratatui_unicode(&mut application, &mut terminal, scenario);
+            bencher.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let started = std::time::Instant::now();
+                    ratatui_unicode_scenario_turn(&mut application, &mut terminal, scenario);
+                    elapsed = elapsed.saturating_add(started.elapsed());
+                    reset_ratatui_unicode(&mut application, &mut terminal, scenario);
+                }
+                black_box(application.semantic_state());
+                elapsed
+            });
+        });
+        group.finish();
+    }
 }
 
 fn overlay_cold_initial_render(criterion: &mut Criterion) {
@@ -1148,6 +1239,124 @@ fn ratatui_overlay_resize(
     );
 }
 
+fn prepare_arborui_unicode(application: &mut TestApp<UnicodeLab>, scenario: UnicodeScenario) {
+    if matches!(scenario, UnicodeScenario::ShiftBoundary) {
+        for _ in 0..UNICODE_BOUNDARY_OFFSET {
+            application.send(UnicodeAction::ShiftRight);
+        }
+    }
+}
+
+fn arborui_unicode_turn(application: &mut TestApp<UnicodeLab>, scenario: UnicodeScenario) {
+    match scenario {
+        UnicodeScenario::ShiftBoundary => {
+            black_box(application.send(UnicodeAction::ShiftRight));
+        }
+        UnicodeScenario::ReplaceWide => {
+            black_box(application.send(UnicodeAction::ReplaceWide));
+        }
+        UnicodeScenario::ResizeNarrow => {
+            black_box(application.resize(Size::new(UNICODE_NARROW_WIDTH, UNICODE_HEIGHT)));
+        }
+    }
+}
+
+fn reset_arborui_unicode(application: &mut TestApp<UnicodeLab>, scenario: UnicodeScenario) {
+    match scenario {
+        UnicodeScenario::ShiftBoundary => {
+            application.send(UnicodeAction::ShiftLeft);
+        }
+        UnicodeScenario::ReplaceWide => {
+            application.send(UnicodeAction::ReplaceWide);
+        }
+        UnicodeScenario::ResizeNarrow => {
+            application.resize(unicode_size());
+        }
+    }
+}
+
+fn prepare_ratatui_unicode(
+    application: &mut RatatuiUnicodeLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: UnicodeScenario,
+) {
+    if matches!(scenario, UnicodeScenario::ShiftBoundary) {
+        for _ in 0..UNICODE_BOUNDARY_OFFSET {
+            ratatui_unicode_turn(application, terminal, UnicodeAction::ShiftRight);
+        }
+    }
+}
+
+fn ratatui_unicode_scenario_turn(
+    application: &mut RatatuiUnicodeLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: UnicodeScenario,
+) {
+    match scenario {
+        UnicodeScenario::ShiftBoundary => {
+            ratatui_unicode_turn(application, terminal, UnicodeAction::ShiftRight);
+        }
+        UnicodeScenario::ReplaceWide => {
+            ratatui_unicode_turn(application, terminal, UnicodeAction::ReplaceWide);
+        }
+        UnicodeScenario::ResizeNarrow => {
+            ratatui_unicode_resize(application, terminal, UNICODE_NARROW_WIDTH);
+        }
+    }
+}
+
+fn reset_ratatui_unicode(
+    application: &mut RatatuiUnicodeLab,
+    terminal: &mut Terminal<TestBackend>,
+    scenario: UnicodeScenario,
+) {
+    match scenario {
+        UnicodeScenario::ShiftBoundary => {
+            ratatui_unicode_turn(application, terminal, UnicodeAction::ShiftLeft);
+        }
+        UnicodeScenario::ReplaceWide => {
+            ratatui_unicode_turn(application, terminal, UnicodeAction::ReplaceWide);
+        }
+        UnicodeScenario::ResizeNarrow => {
+            ratatui_unicode_resize(application, terminal, UNICODE_WIDTH);
+        }
+    }
+}
+
+fn ratatui_unicode_fixture() -> (RatatuiUnicodeLab, Terminal<TestBackend>) {
+    let application = RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+    let mut terminal = Terminal::new(TestBackend::new(UNICODE_WIDTH, UNICODE_HEIGHT))
+        .expect("test terminal must open");
+    draw_test_unicode_terminal(&mut terminal, &application)
+        .expect("initial Unicode frame must draw");
+    (application, terminal)
+}
+
+fn ratatui_unicode_turn(
+    application: &mut RatatuiUnicodeLab,
+    terminal: &mut Terminal<TestBackend>,
+    action: UnicodeAction,
+) {
+    application.apply(action);
+    draw_test_unicode_terminal(terminal, application).expect("Unicode frame must draw");
+}
+
+fn ratatui_unicode_resize(
+    application: &mut RatatuiUnicodeLab,
+    terminal: &mut Terminal<TestBackend>,
+    width: u16,
+) {
+    terminal.backend_mut().resize(width, UNICODE_HEIGHT);
+    ratatui_unicode_turn(
+        application,
+        terminal,
+        UnicodeAction::Resize {
+            width,
+            height: UNICODE_HEIGHT,
+        },
+    );
+}
+
 fn viewport_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(4).max(1) as usize
 }
@@ -1158,6 +1367,10 @@ const fn base_size() -> Size {
 
 const fn overlay_size() -> Size {
     Size::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+}
+
+const fn unicode_size() -> Size {
+    Size::new(UNICODE_WIDTH, UNICODE_HEIGHT)
 }
 
 const fn mode_name(mode: CollectionMode) -> &'static str {

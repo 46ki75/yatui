@@ -3,17 +3,51 @@
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OVERLAY_BACKGROUND_KEY,
     OVERLAY_CANCEL_KEY, OVERLAY_CONFIRM_KEY, OVERLAY_OPEN_KEY, OverlayAction, OverlayLab,
-    TableAction, TableLab,
+    TableAction, TableLab, UnicodeAction, UnicodeLab,
 };
 use arborui_test::{Key, KeyCode, KeyEventKind, KeyModifiers, Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
 
 use arborui_comparison_collection_lab_ratatui::{
     ComparisonAction, CountingBackend, LogSemanticState, OverlayFocus, OverlaySemanticState,
-    RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab, SemanticState,
-    TableSemanticState, draw_terminal, draw_test_frame, draw_test_log_frame,
-    draw_test_overlay_frame, draw_test_table_frame,
+    RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab, RatatuiUnicodeLab,
+    SemanticState, TableSemanticState, UnicodeSemanticState, draw_terminal, draw_test_frame,
+    draw_test_log_frame, draw_test_overlay_frame, draw_test_table_frame, draw_test_unicode_frame,
 };
+
+#[test]
+fn canonical_unicode_trace_matches_semantics_and_characters() {
+    let mut arborui = TestApp::new(UnicodeLab::new(36, 10), Size::new(36, 10));
+    let mut ratatui = RatatuiUnicodeLab::new(36, 10);
+    let mut terminal = Terminal::new(TestBackend::new(36, 10)).expect("test terminal must open");
+
+    assert_unicode_frame(&arborui, &ratatui, &mut terminal);
+    for _ in 0..16 {
+        arborui.send(UnicodeAction::ShiftRight);
+        ratatui.apply(UnicodeAction::ShiftRight);
+        assert_unicode_frame(&arborui, &ratatui, &mut terminal);
+    }
+
+    arborui.send(UnicodeAction::ReplaceWide);
+    ratatui.apply(UnicodeAction::ReplaceWide);
+    assert_unicode_frame(&arborui, &ratatui, &mut terminal);
+
+    arborui.resize(Size::new(30, 10));
+    ratatui.apply(UnicodeAction::Resize {
+        width: 30,
+        height: 10,
+    });
+    terminal.backend_mut().resize(30, 10);
+    assert_unicode_frame(&arborui, &ratatui, &mut terminal);
+
+    arborui.resize(Size::new(42, 12));
+    ratatui.apply(UnicodeAction::Resize {
+        width: 42,
+        height: 12,
+    });
+    terminal.backend_mut().resize(42, 12);
+    assert_unicode_frame(&arborui, &ratatui, &mut terminal);
+}
 
 #[test]
 fn canonical_overlay_trace_matches_semantics_and_characters() {
@@ -473,5 +507,24 @@ fn arborui_overlay_state(app: &TestApp<OverlayLab>) -> OverlaySemanticState {
         confirmations: app.application().model().confirmations(),
         background_activations: app.application().model().background_activations(),
         focus,
+    }
+}
+
+fn assert_unicode_frame(
+    arborui: &TestApp<UnicodeLab>,
+    ratatui: &RatatuiUnicodeLab,
+    terminal: &mut Terminal<TestBackend>,
+) {
+    let frame =
+        draw_test_unicode_frame(terminal, ratatui).expect("Ratatui Unicode frame must draw");
+    assert_eq!(arborui_unicode_state(arborui), ratatui.semantic_state());
+    assert_eq!(arborui.frame().characters(), frame);
+}
+
+fn arborui_unicode_state(app: &TestApp<UnicodeLab>) -> UnicodeSemanticState {
+    UnicodeSemanticState {
+        offset: app.application().model().offset(),
+        replacement_is_wide: app.application().model().replacement_is_wide(),
+        terminal_size: app.application().model().terminal_size(),
     }
 }

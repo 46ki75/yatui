@@ -4,12 +4,12 @@ use std::{error::Error, hint::black_box};
 
 use arborui_comparison_collection_lab_ratatui::{
     ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
-    draw_test_log_terminal, draw_test_overlay_terminal, draw_test_table_terminal,
-    draw_test_terminal,
+    RatatuiUnicodeLab, draw_test_log_terminal, draw_test_overlay_terminal,
+    draw_test_table_terminal, draw_test_terminal, draw_test_unicode_terminal,
 };
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
-    TableAction, TableLab,
+    TableAction, TableLab, UnicodeAction, UnicodeLab,
 };
 use arborui_test::{KeyCode, Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
@@ -21,6 +21,10 @@ const OVERLAY_WIDTH: u16 = 40;
 const OVERLAY_HEIGHT: u16 = 12;
 const OVERLAY_RESIZED_WIDTH: u16 = 44;
 const OVERLAY_RESIZED_HEIGHT: u16 = 14;
+const UNICODE_WIDTH: u16 = 36;
+const UNICODE_HEIGHT: u16 = 10;
+const UNICODE_NARROW_WIDTH: u16 = 30;
+const UNICODE_SHIFT_BOUNDARY_OFFSET: usize = 15;
 
 #[global_allocator]
 static ALLOCATOR: dhat::Alloc = dhat::Alloc;
@@ -37,6 +41,7 @@ enum Workload {
     Table,
     Log,
     Overlay,
+    Unicode,
 }
 
 #[derive(Clone, Copy)]
@@ -60,6 +65,9 @@ enum Scenario {
     Confirm,
     BackgroundActivation,
     ResizeOpen,
+    ShiftBoundary,
+    ReplaceWide,
+    ResizeNarrow,
 }
 
 struct Metrics {
@@ -77,7 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().collect::<Vec<_>>();
     let [_, framework, workload, scenario, item_count] = arguments.as_slice() else {
         return Err(
-            "usage: memory_probe <arborui|ratatui> <fixed|variable|table|log|overlay> <scenario> <items>"
+            "usage: memory_probe <arborui|ratatui> <fixed|variable|table|log|overlay|unicode> <scenario> <items>"
                 .into(),
         );
     };
@@ -85,8 +93,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let workload = parse_workload(workload)?;
     let scenario = parse_scenario(scenario)?;
     let item_count = item_count.parse::<usize>()?;
-    if matches!(workload, Workload::Overlay) && item_count != 1 {
-        return Err("overlay items must be 1 (the workload has no item count)".into());
+    if matches!(workload, Workload::Overlay | Workload::Unicode) && item_count != 1 {
+        return Err(
+            "overlay and unicode items must be 1 (the workloads have no item count)".into(),
+        );
     }
 
     let metrics = match framework {
@@ -113,6 +123,7 @@ fn measure_arborui(workload: Workload, scenario: Scenario, item_count: usize) ->
         Workload::Table => measure_arborui_table(scenario, item_count),
         Workload::Log => measure_arborui_log(scenario, item_count),
         Workload::Overlay => measure_arborui_overlay(scenario),
+        Workload::Unicode => measure_arborui_unicode(scenario),
     }
 }
 
@@ -185,7 +196,10 @@ fn measure_arborui_collection(
                     | Scenario::Cancel
                     | Scenario::Confirm
                     | Scenario::BackgroundActivation
-                    | Scenario::ResizeOpen => {
+                    | Scenario::ResizeOpen
+                    | Scenario::ShiftBoundary
+                    | Scenario::ReplaceWide
+                    | Scenario::ResizeNarrow => {
                         unreachable!("other workload scenarios are handled separately")
                     }
                 }
@@ -203,7 +217,10 @@ fn measure_arborui_collection(
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => {
+        | Scenario::ResizeOpen
+        | Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow => {
             panic!("scenario belongs to another workload")
         }
     }
@@ -271,7 +288,10 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Cancel
                     | Scenario::Confirm
                     | Scenario::BackgroundActivation
-                    | Scenario::ResizeOpen => unreachable!("scenario is handled separately"),
+                    | Scenario::ResizeOpen
+                    | Scenario::ShiftBoundary
+                    | Scenario::ReplaceWide
+                    | Scenario::ResizeNarrow => unreachable!("scenario is handled separately"),
                 }
                 assert_bounded(application.application().constructed_rows());
                 black_box(application)
@@ -286,7 +306,10 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => panic!("scenario is not a table scenario"),
+        | Scenario::ResizeOpen
+        | Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow => panic!("scenario is not a table scenario"),
     }
 }
 
@@ -352,7 +375,10 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Cancel
                     | Scenario::Confirm
                     | Scenario::BackgroundActivation
-                    | Scenario::ResizeOpen => {
+                    | Scenario::ResizeOpen
+                    | Scenario::ShiftBoundary
+                    | Scenario::ReplaceWide
+                    | Scenario::ResizeNarrow => {
                         unreachable!("scenario is handled separately")
                     }
                 }
@@ -370,7 +396,10 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => panic!("scenario is not a scrolling-log scenario"),
+        | Scenario::ResizeOpen
+        | Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow => panic!("scenario is not a scrolling-log scenario"),
     }
 }
 
@@ -425,12 +454,92 @@ fn measure_arborui_overlay(scenario: Scenario) -> Metrics {
     }
 }
 
+fn measure_arborui_unicode(scenario: Scenario) -> Metrics {
+    match scenario {
+        Scenario::Model => measure(|| UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let application = TestApp::new(
+                UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+                unicode_size(),
+            );
+            assert_arborui_unicode_bounded(&application);
+            application
+        }),
+        Scenario::InitialRender => {
+            let model = UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+            measure(move || {
+                let application = TestApp::new(model, unicode_size());
+                assert_arborui_unicode_bounded(&application);
+                application
+            })
+        }
+        Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow
+        | Scenario::UnchangedRedraw => {
+            let mut application = arborui_unicode_fixture(scenario);
+            measure(move || {
+                match scenario {
+                    Scenario::ShiftBoundary => {
+                        application.send(UnicodeAction::ShiftRight);
+                    }
+                    Scenario::ReplaceWide => {
+                        application.send(UnicodeAction::ReplaceWide);
+                    }
+                    Scenario::ResizeNarrow => {
+                        application.resize(Size::new(UNICODE_NARROW_WIDTH, UNICODE_HEIGHT));
+                    }
+                    Scenario::UnchangedRedraw => {
+                        application.send(UnicodeAction::ShiftLeft);
+                    }
+                    Scenario::Model
+                    | Scenario::Cold
+                    | Scenario::InitialRender
+                    | Scenario::PageDown
+                    | Scenario::Resize
+                    | Scenario::Selection
+                    | Scenario::Reverse
+                    | Scenario::VisibleUpdate
+                    | Scenario::OffscreenUpdate
+                    | Scenario::PageUp
+                    | Scenario::AppendFollowing
+                    | Scenario::AppendPaused
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => unreachable!("scenario is handled separately"),
+                }
+                assert_arborui_unicode_bounded(&application);
+                black_box(application)
+            })
+        }
+        Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => panic!("scenario is not a unicode scenario"),
+    }
+}
+
 fn measure_ratatui(workload: Workload, scenario: Scenario, item_count: usize) -> Metrics {
     match workload {
         Workload::Collection(mode) => measure_ratatui_collection(mode, scenario, item_count),
         Workload::Table => measure_ratatui_table(scenario, item_count),
         Workload::Log => measure_ratatui_log(scenario, item_count),
         Workload::Overlay => measure_ratatui_overlay(scenario),
+        Workload::Unicode => measure_ratatui_unicode(scenario),
     }
 }
 
@@ -503,7 +612,10 @@ fn measure_ratatui_collection(
                     | Scenario::Cancel
                     | Scenario::Confirm
                     | Scenario::BackgroundActivation
-                    | Scenario::ResizeOpen => {
+                    | Scenario::ResizeOpen
+                    | Scenario::ShiftBoundary
+                    | Scenario::ReplaceWide
+                    | Scenario::ResizeNarrow => {
                         unreachable!("other workload scenarios are handled separately")
                     }
                 }
@@ -522,7 +634,10 @@ fn measure_ratatui_collection(
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => {
+        | Scenario::ResizeOpen
+        | Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow => {
             panic!("scenario belongs to another workload")
         }
     }
@@ -596,7 +711,10 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Cancel
                     | Scenario::Confirm
                     | Scenario::BackgroundActivation
-                    | Scenario::ResizeOpen => unreachable!("scenario is handled separately"),
+                    | Scenario::ResizeOpen
+                    | Scenario::ShiftBoundary
+                    | Scenario::ReplaceWide
+                    | Scenario::ResizeNarrow => unreachable!("scenario is handled separately"),
                 }
                 draw_test_table_terminal(&mut terminal, &mut application)
                     .expect("table frame must draw");
@@ -613,7 +731,10 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => panic!("scenario is not a table scenario"),
+        | Scenario::ResizeOpen
+        | Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow => panic!("scenario is not a table scenario"),
     }
 }
 
@@ -686,7 +807,10 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::Cancel
                     | Scenario::Confirm
                     | Scenario::BackgroundActivation
-                    | Scenario::ResizeOpen => {
+                    | Scenario::ResizeOpen
+                    | Scenario::ShiftBoundary
+                    | Scenario::ReplaceWide
+                    | Scenario::ResizeNarrow => {
                         unreachable!("scenario is handled separately")
                     }
                 }
@@ -706,7 +830,10 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => panic!("scenario is not a scrolling-log scenario"),
+        | Scenario::ResizeOpen
+        | Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow => panic!("scenario is not a scrolling-log scenario"),
     }
 }
 
@@ -773,6 +900,97 @@ fn measure_ratatui_overlay(scenario: Scenario) -> Metrics {
             })
         }
         _ => panic!("scenario is not an overlay scenario"),
+    }
+}
+
+fn measure_ratatui_unicode(scenario: Scenario) -> Metrics {
+    match scenario {
+        Scenario::Model => measure(|| RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT)),
+        Scenario::Cold => measure(|| {
+            let application = RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+            let mut terminal = Terminal::new(TestBackend::new(UNICODE_WIDTH, UNICODE_HEIGHT))
+                .expect("test terminal must open");
+            draw_test_unicode_terminal(&mut terminal, &application)
+                .expect("initial unicode frame must draw");
+            assert_ratatui_unicode_bounded(&application, &terminal);
+            (application, terminal)
+        }),
+        Scenario::InitialRender => {
+            let application = RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+            measure(move || {
+                let mut terminal = Terminal::new(TestBackend::new(UNICODE_WIDTH, UNICODE_HEIGHT))
+                    .expect("test terminal must open");
+                draw_test_unicode_terminal(&mut terminal, &application)
+                    .expect("initial unicode frame must draw");
+                assert_ratatui_unicode_bounded(&application, &terminal);
+                (application, terminal)
+            })
+        }
+        Scenario::ShiftBoundary
+        | Scenario::ReplaceWide
+        | Scenario::ResizeNarrow
+        | Scenario::UnchangedRedraw => {
+            let (mut application, mut terminal) = ratatui_unicode_fixture(scenario);
+            measure(move || {
+                match scenario {
+                    Scenario::ShiftBoundary => {
+                        application.apply(UnicodeAction::ShiftRight);
+                    }
+                    Scenario::ReplaceWide => {
+                        application.apply(UnicodeAction::ReplaceWide);
+                    }
+                    Scenario::ResizeNarrow => {
+                        terminal
+                            .backend_mut()
+                            .resize(UNICODE_NARROW_WIDTH, UNICODE_HEIGHT);
+                        application.apply(UnicodeAction::Resize {
+                            width: UNICODE_NARROW_WIDTH,
+                            height: UNICODE_HEIGHT,
+                        });
+                    }
+                    Scenario::UnchangedRedraw => {
+                        application.apply(UnicodeAction::ShiftLeft);
+                    }
+                    Scenario::Model
+                    | Scenario::Cold
+                    | Scenario::InitialRender
+                    | Scenario::PageDown
+                    | Scenario::Resize
+                    | Scenario::Selection
+                    | Scenario::Reverse
+                    | Scenario::VisibleUpdate
+                    | Scenario::OffscreenUpdate
+                    | Scenario::PageUp
+                    | Scenario::AppendFollowing
+                    | Scenario::AppendPaused
+                    | Scenario::Open
+                    | Scenario::FocusNext
+                    | Scenario::Cancel
+                    | Scenario::Confirm
+                    | Scenario::BackgroundActivation
+                    | Scenario::ResizeOpen => unreachable!("scenario is handled separately"),
+                }
+                draw_test_unicode_terminal(&mut terminal, &application)
+                    .expect("unicode frame must draw");
+                assert_ratatui_unicode_bounded(&application, &terminal);
+                black_box((application, terminal))
+            })
+        }
+        Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => panic!("scenario is not a unicode scenario"),
     }
 }
 
@@ -852,6 +1070,76 @@ fn ratatui_overlay_fixture(scenario: Scenario) -> (RatatuiOverlayLab, Terminal<T
     (application, terminal)
 }
 
+fn arborui_unicode_fixture(scenario: Scenario) -> TestApp<UnicodeLab> {
+    let mut application = TestApp::new(
+        UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+        unicode_size(),
+    );
+    match scenario {
+        Scenario::ShiftBoundary => {
+            for _ in 0..UNICODE_SHIFT_BOUNDARY_OFFSET {
+                application.send(UnicodeAction::ShiftRight);
+            }
+        }
+        Scenario::ReplaceWide | Scenario::ResizeNarrow | Scenario::UnchangedRedraw => {}
+        Scenario::Model
+        | Scenario::Cold
+        | Scenario::InitialRender
+        | Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => unreachable!("only unicode actions use a unicode fixture"),
+    }
+    assert_arborui_unicode_bounded(&application);
+    application
+}
+
+fn ratatui_unicode_fixture(scenario: Scenario) -> (RatatuiUnicodeLab, Terminal<TestBackend>) {
+    let mut application = RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+    let mut terminal = Terminal::new(TestBackend::new(UNICODE_WIDTH, UNICODE_HEIGHT))
+        .expect("test terminal must open");
+    match scenario {
+        Scenario::ShiftBoundary => {
+            for _ in 0..UNICODE_SHIFT_BOUNDARY_OFFSET {
+                application.apply(UnicodeAction::ShiftRight);
+            }
+        }
+        Scenario::ReplaceWide | Scenario::ResizeNarrow | Scenario::UnchangedRedraw => {}
+        Scenario::Model
+        | Scenario::Cold
+        | Scenario::InitialRender
+        | Scenario::PageDown
+        | Scenario::Resize
+        | Scenario::Selection
+        | Scenario::Reverse
+        | Scenario::VisibleUpdate
+        | Scenario::OffscreenUpdate
+        | Scenario::PageUp
+        | Scenario::AppendFollowing
+        | Scenario::AppendPaused
+        | Scenario::Open
+        | Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::BackgroundActivation
+        | Scenario::ResizeOpen => unreachable!("only unicode actions use a unicode fixture"),
+    }
+    draw_test_unicode_terminal(&mut terminal, &application).expect("unicode baseline must draw");
+    assert_ratatui_unicode_bounded(&application, &terminal);
+    (application, terminal)
+}
+
 fn assert_arborui_overlay_bounded(application: &TestApp<OverlayLab>) {
     let frame = application.frame();
     let (width, height) = application.application().model().terminal_size();
@@ -875,6 +1163,35 @@ fn assert_ratatui_overlay_bounded(
         usize::from(width) * usize::from(height)
     );
     assert!(buffer.content().len() <= overlay_max_cells());
+}
+
+fn assert_arborui_unicode_bounded(application: &TestApp<UnicodeLab>) {
+    let frame = application.frame();
+    let (width, height) = application.application().model().terminal_size();
+    assert_eq!(frame.size(), Size::new(width, height));
+    assert_eq!(
+        frame.cells().len(),
+        usize::from(width) * usize::from(height)
+    );
+    assert!(frame.cells().len() <= unicode_max_cells());
+}
+
+fn assert_ratatui_unicode_bounded(
+    application: &RatatuiUnicodeLab,
+    terminal: &Terminal<TestBackend>,
+) {
+    let buffer = terminal.backend().buffer();
+    let (width, height) = application.terminal_size();
+    assert_eq!((buffer.area.width, buffer.area.height), (width, height));
+    assert_eq!(
+        buffer.content().len(),
+        usize::from(width) * usize::from(height)
+    );
+    assert!(buffer.content().len() <= unicode_max_cells());
+}
+
+const fn unicode_max_cells() -> usize {
+    UNICODE_WIDTH as usize * UNICODE_HEIGHT as usize
 }
 
 const fn overlay_max_cells() -> usize {
@@ -901,6 +1218,7 @@ fn parse_workload(value: &str) -> Result<Workload, Box<dyn Error>> {
         "table" => Ok(Workload::Table),
         "log" => Ok(Workload::Log),
         "overlay" => Ok(Workload::Overlay),
+        "unicode" => Ok(Workload::Unicode),
         _ => Err(format!("unknown workload: {value}").into()),
     }
 }
@@ -926,6 +1244,9 @@ fn parse_scenario(value: &str) -> Result<Scenario, Box<dyn Error>> {
         "confirm" => Ok(Scenario::Confirm),
         "background-activation" => Ok(Scenario::BackgroundActivation),
         "resize-open" => Ok(Scenario::ResizeOpen),
+        "shift-boundary" => Ok(Scenario::ShiftBoundary),
+        "replace-wide" => Ok(Scenario::ReplaceWide),
+        "resize-narrow" => Ok(Scenario::ResizeNarrow),
         _ => Err(format!("unknown scenario: {value}").into()),
     }
 }
@@ -936,6 +1257,10 @@ const fn base_size() -> Size {
 
 const fn overlay_size() -> Size {
     Size::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+}
+
+const fn unicode_size() -> Size {
+    Size::new(UNICODE_WIDTH, UNICODE_HEIGHT)
 }
 
 fn viewport_height(terminal_height: u16) -> usize {

@@ -3,8 +3,38 @@
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OVERLAY_CANCEL_KEY,
     OVERLAY_CONFIRM_KEY, OVERLAY_OPEN_KEY, OverlayAction, OverlayLab, TableAction, TableLab,
+    UnicodeLab,
 };
-use arborui_test::{Key, KeyCode, Point, Size, TestApp};
+use arborui_test::{Key, KeyCode, Point, Size, TestApp, TestCellContent};
+
+#[test]
+fn unicode_shift_omits_a_grapheme_cut_by_the_left_clip() {
+    let mut application = TestApp::new(UnicodeLab::new(36, 10), Size::new(36, 10));
+
+    for _ in 0..16 {
+        application.key(KeyCode::Right);
+    }
+
+    assert_eq!(application.application().model().offset(), 16);
+    assert_eq!(
+        application
+            .frame()
+            .cell(Point::new(1, 3))
+            .map(|cell| &cell.content),
+        Some(&TestCellContent::Empty)
+    );
+    assert!(matches!(
+        application.frame().cell(Point::new(2, 3)).map(|cell| &cell.content),
+        Some(TestCellContent::Grapheme { text, width: 2 }) if text.as_ref() == "京"
+    ));
+    assert_eq!(
+        application
+            .frame()
+            .cell(Point::new(3, 3))
+            .map(|cell| &cell.content),
+        Some(&TestCellContent::Continuation { offset: 1 })
+    );
+}
 
 #[test]
 fn overlay_traps_focus_and_restores_the_open_control() {

@@ -1,7 +1,7 @@
 # Collection Lab Ratatui Comparison
 
 This package contains matched Ratatui implementations for ArborUI's Collection
-Lab list, table, scrolling-log, and overlay experiments. It is excluded from the
+Lab list, table, scrolling-log, overlay, and Unicode clipping experiments. It is excluded from the
 product workspace so Ratatui does not become part of ArborUI's facade-only
 example dependency graph.
 
@@ -31,6 +31,12 @@ background control. The scrim isolates covered pointer targets. ArborUI receives
 real key events through its runtime; the immediate-mode Ratatui adapter applies
 the same focus policy explicitly in application state.
 
+The Unicode workload shares mixed rows containing a decomposed combining
+sequence, CJK, ZWJ emoji, a flag, a variation-selector heart, and an ambiguous
+character. Cell-based horizontal shifts deliberately cut through a width-two
+grapheme at the left edge; both renderers omit the complete clipped grapheme. A
+separate turn replaces a width-two glyph with width-one ASCII.
+
 The deterministic contract covers:
 
 - Fixed and variable-height rendering at explicit terminal sizes
@@ -47,6 +53,8 @@ The deterministic contract covers:
 - Overlay focus trap, wrap, restoration, and pointer isolation
 - Exact overlay character and semantic parity at 40x12 normally and 44x14 after
   resizing while open
+- Exact Unicode character and semantic parity through atomic left clipping,
+  wide-to-narrow replacement, and 36x10 to 30x10 and 42x12 resizes
 
 The timing benchmark measures a complete logical application turn: update,
 visible-row construction, paint, and logical terminal diff. It excludes model
@@ -85,7 +93,7 @@ changes the work being measured.
 `comparison-output-metrics` passes real ArborUI patches and Ratatui buffer diffs
 through each framework's Crossterm backend under fixed ANSI16 conditions. The
 collection workloads use 48x12; the overlay uses 40x12 normally and 44x14 after
-resize. It reports bytes presented to the writer, writer callback counts, and
+resize; the Unicode workload uses 36x10 and narrows to 30x10. It reports bytes presented to the writer, writer callback counts, and
 flushes. Writer callbacks are serializer operations, not operating-system
 syscall counts. Resize cases include Ratatui's production clear before the full
 draw.
@@ -280,6 +288,32 @@ Background activation changes application state without changing visible
 content. ArborUI therefore suppresses backend output; Ratatui completes its
 immediate-mode draw and emits the empty-diff reset sequence.
 
+## Unicode Workload Result
+
+The matched Unicode workload stresses application-level grapheme composition
+and cell clipping rather than claiming equivalent text-editor APIs. Exact frame
+comparison uses Ratatui's completed logical frame so physical test-backend cells
+do not confuse a wide glyph with its continuation. One optimized 2026-07-17 run
+produced:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Cold initial | 106.2 us (105.4-107.1) | 24.48 us (24.24-24.73) |
+| Shift through wide boundary | 74.79 us (74.36-75.19) | 13.62 us (13.52-13.73) |
+| Replace wide with narrow | 68.78 us (68.37-69.17) | 18.80 us (12.78-27.36) |
+| Resize 36x10 to 30x10 | 76.65 us (76.11-77.13) | 15.52 us (15.45-15.59) |
+
+The Ratatui replacement sample had substantial variance and should not be used
+as a precise point comparison. Production serializer results are
+`bytes/writer calls/flushes`:
+
+| Scenario | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Initial | 3307/2340/1 | 1016/664/1 |
+| Shift through wide boundary | 737/580/1 | 196/166/1 |
+| Replace wide with narrow | 125/88/1 | 44/33/1 |
+| Resize narrow | 2797/1980/1 | 947/624/2 |
+
 ## Allocation And Retained Memory
 
 `comparison-memory-metrics` runs every case in a separate release-mode process
@@ -357,6 +391,11 @@ capture, not total process memory; each baseline is built before profiling:
 
 Ratatui's resize result retains its resized double buffer.
 
+The shared Unicode model retains 396 bytes on both sides. Initial-render
+framework memory is 62,268 bytes for ArborUI and 51,840 bytes for Ratatui.
+Action-scoped retained bytes are 31,484/0 for the boundary shift, 28,962/38 for
+wide replacement, 51,332/0 for resize, and 25,092/0 for unchanged redraw.
+
 ## ArborUI Phase Attribution
 
 ArborUI exposes opt-in timings for view construction, staged reconciliation,
@@ -421,8 +460,20 @@ The overlay phase report shows every measured ArborUI phase in nanoseconds:
 | Background | 309 | 1,049 | 1,897 | 0 | 987 | 1,878 | 3,395 | 638 | 11,118 |
 | Resize open | 2,652 | 2,495 | 5,383 | 43,649 | 48,179 | 13,670 | 4,724 | 1,436 | 120,647 |
 
+The Unicode phase report is:
+
+| Scenario | Update | View | Stage | Layout | Paint | Diff | Commit | Post | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Initial | 0 | 1,625 | 3,535 | 30,208 | 48,896 | 12,341 | 7,820 | 1,238 | 106,794 |
+| Shift boundary | 485 | 1,355 | 3,189 | 27,334 | 37,083 | 4,882 | 5,416 | 1,010 | 81,016 |
+| Replace wide | 560 | 1,244 | 3,103 | 26,293 | 41,466 | 2,388 | 6,809 | 966 | 82,964 |
+| Resize narrow | 1,722 | 1,275 | 3,079 | 27,888 | 40,095 | 8,451 | 7,767 | 1,008 | 90,305 |
+
 Structural overlay turns expose layout, paint, and serialization costs. Focus
 movement and unchanged background activation take the no-layout path.
+Unicode shift, replacement, and resize all require layout and paint; paint is
+the largest named phase. Resize-storm and live-ingress evidence remain open
+before selecting another renderer optimization.
 
 Ordinary preparation skips layout when reconciliation reports only paint or no
 changes. Paint-only work against the exact committed renderer generation clones
