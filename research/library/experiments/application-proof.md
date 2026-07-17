@@ -71,7 +71,8 @@ The third slice replaces unbounded proxy transport with a dedicated bounded
 queue. `RuntimeOptions` selects a positive capacity and defaults to 1,024.
 `EventProxy::send` rejects the new message with `Full` when occupied or `Closed`
 after shutdown, retaining the unsent message in both cases. Shared metrics expose
-depth, high-water mark, full rejections, capacity, and closure. The runner
+depth, high-water mark, accepted and dequeued totals, full rejections, cumulative
+and maximum admission-to-dequeue latency, capacity, and closure. The runner
 consumes external messages directly instead of bulk-moving them into its
 internal message deque, and alternates external and internal sources when both
 are ready.
@@ -146,9 +147,11 @@ The public application harness verifies:
 - Capacity-two facade tests accept exactly two items, reject the third without
   changing the queue, inspect shared pressure metrics, drain accepted items,
   retry the recovered item, and settle completion.
+- A capacity-one facade test fills ingress with the final item, recovers the
+  rejected completion, and proves completion cannot overtake that item.
 - Runtime tests verify ownership recovery, clone-shared capacity, FIFO delivery,
-  capacity release, high-water and rejection metrics, wake behavior, and closure
-  after quit or runner destruction.
+  capacity release, high-water and rejection metrics, exact manual-clock queue
+  latency, wake behavior, and closure after quit or runner destruction.
 - Producer-policy tests verify retry of the recovered message after capacity
   drains and termination after cooperative cancellation or closed ingress.
 - A fixed-height collection with one million logical rows constructs the same
@@ -396,7 +399,33 @@ plus full draw uses sixteen. ArborUI's complete-storm phase totals range from
 698,620 ns for Unicode to 1,503,069 ns for table. Layout dominates the
 table, paint dominates collection and Unicode, and layout and paint are close
 for the paused log and overlay. This does not identify one workload-independent
-local optimization; live-ingress and queue-latency evidence remain necessary.
+local optimization.
+
+The live-ingress slice timestamps accepted proxy entries with a private monotonic
+ingress clock and records latency when the runner removes each entry immediately
+before application update. A manual-clock runtime test proves exact cumulative
+and maximum values without sleeping. Focus Queue separately runs a real producer
+thread through the public facade with 1,024 items plus completion, a forced first
+`Full`, recovered-message retry, complete headless rendering, and semantic
+settlement. One optimized run on 2026-07-17 reported:
+
+| Capacity | Accepted | Full rejections | Average queue latency | Max queue latency | Complete burst | Drain turns | Frames |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1025 | 1060 | 24.946 us | 591.507 us | 130.671 ms | 1063 | 1021 |
+| 8 | 1025 | 128 | 19.112 us | 315.829 us | 15.333 ms | 139 | 127 |
+| 64 | 1025 | 12 | 66.494 us | 360.219 us | 2.799 ms | 19 | 14 |
+
+The probe deliberately uses a 50-microsecond retry delay rather than Focus
+Queue's human-scale 25-millisecond demonstration delay. Scheduling, rejection,
+turn, and frame counts are observational rather than regression thresholds. All
+capacities reach their exact bound, retain only 32 application items, dequeue
+all 1,025 accepted messages, and preserve completion ordering. Larger capacity
+reduces retry delay and total burst time in this run; per-message queue latency
+is scheduler-sensitive and not monotonic by capacity. Repeated invalidations
+still coalesce substantially, most clearly at capacity 64, where 1,025 updates
+commit 14 frames. This evidence selects no new local renderer optimization;
+slow terminal polling and input-to-write-complete latency remain separate open
+measurements.
 
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
@@ -414,6 +443,7 @@ cargo test -p arborui-runtime --all-features
 cargo test -p arborui-test --all-features
 cargo test -p arborui-widgets --all-features
 INSTA_UPDATE=no cargo test -p arborui-example-focus-queue --all-features
+just focus-queue-ingress-metrics
 INSTA_UPDATE=no cargo test -p arborui-example-collection-lab --all-features
 cargo bench -p arborui-example-collection-lab --bench visible_ranges -- --noplot
 just comparison-memory-metrics
@@ -434,11 +464,13 @@ so there is no identity to restore. Focus Queue now always renders the same stac
 host and conditionally adds the keyed dialog layer. This preserves the
 application subtree and restores the exact originating control.
 
-The external-work slice required no runtime API change. `EventProxy` is
+The external-work slice required no transport-policy change. `EventProxy` is
 sufficient for an external producer to submit owned messages while application
-updates remain serialized. Cancellation is necessarily cooperative at this
-layer, and generation checks are still required because a producer may race the
-cancel request with an already prepared item or terminal result.
+updates remain serialized. The live-ingress evidence extends its shared metrics
+but retains reject-new admission and recovered-message ownership. Cancellation
+is necessarily cooperative at this layer, and generation checks are still
+required because a producer may race the cancel request with an already prepared
+item or terminal result.
 
 `TestApp::settle` can deterministically drain messages that a controlled
 producer has already submitted. It cannot infer whether an arbitrary external
@@ -493,8 +525,8 @@ The Unicode evidence confirms atomic clipping and wide-to-narrow cleanup through
 the public application boundary. Its active turns show the same layout-and-paint
 shape as structural overlay work, with paint dominant in the phase report. This
 closes the planned Unicode-heavy evidence slice without changing the renderer;
-the matched resize storm now establishes repeated resize churn, while queue
-latency remains open.
+the matched resize storm establishes repeated resize churn, and the live-ingress
+probe now measures queue latency under a bounded-depth threaded burst.
 
 ## Limits And Next Evidence
 
@@ -521,6 +553,7 @@ semantic parity plus latency, output, memory, and phase evidence. The matched
 Unicode slice adds combining, wide, joined, flag, variation-selector, and
 ambiguous content at clipping boundaries. The matched resize storms show that
 layout and paint weight varies by workload.
-Live ingress should establish queue-latency and backpressure costs before another
-local optimization. Select and reusable table requirements can extend the pilot
-separately.
+Live ingress now establishes queue-latency and backpressure costs under the
+measured burst without selecting another local renderer optimization. Slow-sink
+input-to-write latency is the next performance boundary; select and reusable
+table requirements can extend the pilot separately.

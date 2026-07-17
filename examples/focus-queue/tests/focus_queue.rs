@@ -542,6 +542,10 @@ fn bounded_activity_ingress_rejects_recovers_and_retries_new_item() {
     assert_eq!(proxy.metrics().depth, 2);
     assert_eq!(proxy.metrics().high_water_mark, 2);
     assert_eq!(proxy.metrics().rejected, 1);
+    assert_eq!(proxy.metrics().accepted, 2);
+    assert_eq!(proxy.metrics().dequeued, 0);
+    assert_eq!(proxy.metrics().total_queue_latency, Duration::ZERO);
+    assert_eq!(proxy.metrics().max_queue_latency, Duration::ZERO);
 
     app.settle();
     assert_eq!(app.application().activity_item_count(), 2);
@@ -557,7 +561,56 @@ fn bounded_activity_ingress_rejects_recovers_and_retries_new_item() {
     );
     assert_eq!(app.application().activity_item_count(), 3);
     assert_eq!(app.application().activity_item(2), Some("recovered three"));
-    assert_eq!(proxy.metrics().depth, 0);
+    let metrics = proxy.metrics();
+    assert_eq!(metrics.depth, 0);
+    assert_eq!(metrics.accepted, 4);
+    assert_eq!(metrics.dequeued, 4);
+    assert!(metrics.total_queue_latency >= metrics.max_queue_latency);
+}
+
+#[test]
+fn activity_completion_retries_after_the_last_item_drains() {
+    let activity_source = ControlledActivity::default();
+    let options = RuntimeOptions::new()
+        .with_event_ingress_capacity(NonZeroUsize::new(1).unwrap_or(NonZeroUsize::MIN));
+    let mut app =
+        TestApp::with_runtime_options(activity_source.queue(), Size::new(72, 18), options);
+    app.send(Message::StartActivity);
+    let (generation, cancellation, proxy) = activity_source.launch(0);
+
+    assert!(
+        proxy
+            .send(Message::ActivityItem {
+                generation,
+                text: "last accepted item".to_owned(),
+            })
+            .is_ok()
+    );
+    let completion = proxy
+        .send(Message::ActivityFinished { generation })
+        .expect_err("completion should observe the occupied ingress slot");
+    assert_eq!(completion.kind(), EventProxySendErrorKind::Full);
+    assert_eq!(app.application().activity_status(), ActivityStatus::Running);
+
+    app.settle();
+    assert_eq!(
+        app.application().activity_item(0),
+        Some("last accepted item")
+    );
+    assert_eq!(app.application().activity_status(), ActivityStatus::Running);
+    assert!(proxy.send(completion.into_inner()).is_ok());
+    app.settle();
+
+    assert!(cancellation.is_cancelled());
+    assert_eq!(
+        app.application().activity_status(),
+        ActivityStatus::Completed
+    );
+    let metrics = proxy.metrics();
+    assert_eq!(metrics.high_water_mark, 1);
+    assert_eq!(metrics.rejected, 1);
+    assert_eq!(metrics.accepted, 2);
+    assert_eq!(metrics.dequeued, 2);
 }
 
 #[test]

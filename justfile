@@ -50,6 +50,9 @@ bench:
     cargo bench -p arborui --bench stabilization --all-features -- --noplot
     cargo bench -p arborui-example-collection-lab --bench visible_ranges --all-features -- --noplot
 
+focus-queue-ingress-metrics:
+    cargo test --release -p arborui-example-focus-queue --test live_ingress_metrics --all-features -- --ignored --nocapture
+
 comparison-check:
     CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 fmt --manifest-path comparisons/collection-lab-ratatui/Cargo.toml -- --check
     CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 clippy --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --all-targets --locked -- -D warnings

@@ -300,10 +300,14 @@ A successful send proves admission, not that the application update has run;
 work admitted immediately before concurrent shutdown may be discarded.
 
 `EventProxy::metrics` snapshots configured capacity, current depth, high-water
-mark, full-rejection count, and closure. Clones share one queue and its metrics.
-Accepted messages from one producer remain FIFO; interleaving between concurrent
-producers is unspecified. A rejected message has no queue position, so retrying
-it may place it after messages accepted in the meantime.
+mark, accepted and dequeued totals, full-rejection count, cumulative and maximum
+admission-to-dequeue latency, and closure. Queue latency ends when the runner
+removes the message immediately before serialized application update; it does
+not include update or rendering time. Lifetime counters and cumulative latency
+saturate at their type limits. Clones share one queue and its metrics. Accepted
+messages from one producer remain FIFO; interleaving between concurrent producers
+is unspecified. A rejected message has no queue position, so retrying it may
+place it after messages accepted in the meantime.
 
 The initial implementation uses explicit invalidation through `UpdateContext`.
 An update that mutates visible model state requests `Paint`, `Layout`, or

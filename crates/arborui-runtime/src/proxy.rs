@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     fmt,
     sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use crate::scheduler::WakeSignal;
@@ -70,6 +71,14 @@ pub struct EventIngressMetrics {
     pub high_water_mark: usize,
     /// Number of new messages rejected because ingress was full.
     pub rejected: u64,
+    /// Saturating number of messages accepted since runner construction.
+    pub accepted: u64,
+    /// Saturating number removed for serialized application update.
+    pub dequeued: u64,
+    /// Saturating sum of admission-to-dequeue latency for dequeued messages.
+    pub total_queue_latency: Duration,
+    /// Largest admission-to-dequeue latency observed so far.
+    pub max_queue_latency: Duration,
     /// Whether the runner has stopped accepting external messages.
     pub closed: bool,
 }
@@ -77,14 +86,46 @@ pub struct EventIngressMetrics {
 struct EventIngress<Message> {
     state: Mutex<EventIngressState<Message>>,
     wake: Arc<WakeSignal>,
+    clock: IngressClock,
+}
+
+enum IngressClock {
+    System(Instant),
+    #[cfg(test)]
+    Manual(Arc<std::sync::atomic::AtomicU64>),
+}
+
+impl IngressClock {
+    fn new() -> Self {
+        Self::System(Instant::now())
+    }
+
+    fn now(&self) -> Duration {
+        match self {
+            Self::System(origin) => origin.elapsed(),
+            #[cfg(test)]
+            Self::Manual(elapsed_nanos) => {
+                Duration::from_nanos(elapsed_nanos.load(std::sync::atomic::Ordering::Acquire))
+            }
+        }
+    }
 }
 
 struct EventIngressState<Message> {
-    queue: VecDeque<Message>,
+    queue: VecDeque<QueuedMessage<Message>>,
     capacity: usize,
     high_water_mark: usize,
     rejected: u64,
+    accepted: u64,
+    dequeued: u64,
+    total_queue_latency: Duration,
+    max_queue_latency: Duration,
     closed: bool,
+}
+
+struct QueuedMessage<Message> {
+    message: Message,
+    admitted_at: Duration,
 }
 
 impl<Message> EventIngress<Message> {
@@ -124,7 +165,11 @@ impl<Message> EventProxy<Message> {
                     message,
                 });
             }
-            state.queue.push_back(message);
+            state.queue.push_back(QueuedMessage {
+                message,
+                admitted_at: self.ingress.clock.now(),
+            });
+            state.accepted = state.accepted.saturating_add(1);
             state.high_water_mark = state.high_water_mark.max(state.queue.len());
         }
         self.ingress.wake.notify();
@@ -140,6 +185,10 @@ impl<Message> EventProxy<Message> {
             depth: state.queue.len(),
             high_water_mark: state.high_water_mark,
             rejected: state.rejected,
+            accepted: state.accepted,
+            dequeued: state.dequeued,
+            total_queue_latency: state.total_queue_latency,
+            max_queue_latency: state.max_queue_latency,
             closed: state.closed,
         }
     }
@@ -168,7 +217,14 @@ pub(crate) struct EventReceiver<Message> {
 
 impl<Message> EventReceiver<Message> {
     pub(crate) fn receive(&self) -> Option<Message> {
-        self.ingress.state().queue.pop_front()
+        let mut state = self.ingress.state();
+        let now = self.ingress.clock.now();
+        let queued = state.queue.pop_front()?;
+        let latency = now.saturating_sub(queued.admitted_at);
+        state.dequeued = state.dequeued.saturating_add(1);
+        state.total_queue_latency = state.total_queue_latency.saturating_add(latency);
+        state.max_queue_latency = state.max_queue_latency.max(latency);
+        Some(queued.message)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -195,6 +251,14 @@ pub(crate) fn event_channel<Message>(
     capacity: usize,
     wake: Arc<WakeSignal>,
 ) -> (EventProxy<Message>, EventReceiver<Message>) {
+    event_channel_with_clock(capacity, wake, IngressClock::new())
+}
+
+fn event_channel_with_clock<Message>(
+    capacity: usize,
+    wake: Arc<WakeSignal>,
+    clock: IngressClock,
+) -> (EventProxy<Message>, EventReceiver<Message>) {
     debug_assert!(capacity > 0);
     let ingress = Arc::new(EventIngress {
         state: Mutex::new(EventIngressState {
@@ -202,9 +266,14 @@ pub(crate) fn event_channel<Message>(
             capacity,
             high_water_mark: 0,
             rejected: 0,
+            accepted: 0,
+            dequeued: 0,
+            total_queue_latency: Duration::ZERO,
+            max_queue_latency: Duration::ZERO,
             closed: false,
         }),
         wake,
+        clock,
     });
     (
         EventProxy {
@@ -217,11 +286,49 @@ pub(crate) fn event_channel<Message>(
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Barrier},
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicU64, Ordering},
+        },
         thread,
+        time::Duration,
     };
 
     use super::*;
+
+    fn test_event_channel<Message>(
+        capacity: usize,
+        wake: Arc<WakeSignal>,
+    ) -> (EventProxy<Message>, EventReceiver<Message>) {
+        event_channel(capacity, wake)
+    }
+
+    struct ManualClock {
+        elapsed_nanos: Arc<AtomicU64>,
+    }
+
+    impl Default for ManualClock {
+        fn default() -> Self {
+            Self {
+                elapsed_nanos: Arc::new(AtomicU64::new(0)),
+            }
+        }
+    }
+
+    impl ManualClock {
+        fn advance(&self, duration: Duration) {
+            let nanos = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+            let _ =
+                self.elapsed_nanos
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |elapsed| {
+                        Some(elapsed.saturating_add(nanos))
+                    });
+        }
+
+        fn source(&self) -> IngressClock {
+            IngressClock::Manual(Arc::clone(&self.elapsed_nanos))
+        }
+    }
 
     struct ReentrantDrop {
         proxy: EventProxy<Self>,
@@ -236,7 +343,7 @@ mod tests {
     #[test]
     fn full_ingress_rejects_new_message_and_recovers_ownership() {
         let wake = Arc::new(WakeSignal::new());
-        let (proxy, receiver) = event_channel(2, wake);
+        let (proxy, receiver) = test_event_channel(2, wake);
 
         assert!(proxy.send(String::from("first")).is_ok());
         assert!(proxy.send(String::from("second")).is_ok());
@@ -253,6 +360,10 @@ mod tests {
                 depth: 2,
                 high_water_mark: 2,
                 rejected: 1,
+                accepted: 2,
+                dequeued: 0,
+                total_queue_latency: Duration::ZERO,
+                max_queue_latency: Duration::ZERO,
                 closed: false,
             }
         );
@@ -263,7 +374,7 @@ mod tests {
     #[test]
     fn clones_share_capacity_and_processing_frees_a_slot() {
         let wake = Arc::new(WakeSignal::new());
-        let (proxy, receiver) = event_channel(1, Arc::clone(&wake));
+        let (proxy, receiver) = test_event_channel(1, Arc::clone(&wake));
         let clone = proxy.clone();
 
         assert!(proxy.send(1).is_ok());
@@ -283,7 +394,7 @@ mod tests {
     #[test]
     fn dropping_receiver_closes_ingress_and_recovers_message() {
         let wake = Arc::new(WakeSignal::new());
-        let (proxy, receiver) = event_channel(1, wake);
+        let (proxy, receiver) = test_event_channel(1, wake);
         drop(receiver);
 
         let error = proxy
@@ -298,7 +409,7 @@ mod tests {
     #[test]
     fn closing_drops_pending_messages_outside_the_ingress_lock() {
         let wake = Arc::new(WakeSignal::new());
-        let (proxy, receiver) = event_channel(1, wake);
+        let (proxy, receiver) = test_event_channel(1, wake);
         assert!(
             proxy
                 .send(ReentrantDrop {
@@ -316,7 +427,7 @@ mod tests {
     #[test]
     fn concurrent_producers_compete_for_one_shared_slot() {
         let wake = Arc::new(WakeSignal::new());
-        let (proxy, receiver) = event_channel(1, wake);
+        let (proxy, receiver) = test_event_channel(1, wake);
         let start = Arc::new(Barrier::new(3));
         let first_start = Arc::clone(&start);
         let first_proxy = proxy.clone();
@@ -345,5 +456,34 @@ mod tests {
         assert!(matches!(receiver.receive(), Some(1 | 2)));
         assert_eq!(proxy.metrics().high_water_mark, 1);
         assert_eq!(proxy.metrics().rejected, 1);
+    }
+
+    #[test]
+    fn metrics_record_admission_to_dequeue_latency() {
+        let clock = ManualClock::default();
+        let (proxy, receiver) =
+            event_channel_with_clock(2, Arc::new(WakeSignal::new()), clock.source());
+
+        assert!(proxy.send("first").is_ok());
+        clock.advance(Duration::from_millis(5));
+        assert!(proxy.send("second").is_ok());
+        clock.advance(Duration::from_millis(2));
+
+        assert_eq!(receiver.receive(), Some("first"));
+        assert_eq!(receiver.receive(), Some("second"));
+        assert_eq!(
+            proxy.metrics(),
+            EventIngressMetrics {
+                capacity: 2,
+                depth: 0,
+                high_water_mark: 2,
+                rejected: 0,
+                accepted: 2,
+                dequeued: 2,
+                total_queue_latency: Duration::from_millis(9),
+                max_queue_latency: Duration::from_millis(7),
+                closed: false,
+            }
+        );
     }
 }

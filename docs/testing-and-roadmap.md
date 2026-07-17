@@ -510,8 +510,11 @@ output, retained-memory, and ArborUI phase evidence. The completed matched
 eight-frame resize storms alternate narrow/wide and short/tall dimensions across
 collections, table, paused log, open overlay, and Unicode; require exact parity
 after every frame; and add complete-turn latency, full-repaint output, peak and
-retained memory, and ArborUI phase evidence. Live ingress and finer-grained
-incremental work remain open.
+retained memory, and ArborUI phase evidence. The completed live-ingress slice
+adds accepted and dequeued totals, cumulative and maximum queue latency, exact
+bounded-pressure contracts, terminal-result retry ordering, and an optimized
+Focus Queue burst report across capacities 1, 8, and 64. Finer-grained
+incremental work and slow-sink end-to-end latency remain open.
 
 Deliver:
 
