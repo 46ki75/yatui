@@ -166,6 +166,24 @@ fn checkbox_renders_and_emits_the_next_controlled_state() -> Result<(), Box<dyn 
 
     assert_eq!(patch_grapheme(prepared.patch(), Point::ORIGIN), Some("["));
     tree.commit(prepared, &mut renderer)?;
+
+    let down = tree.dispatch(
+        &view,
+        &pointer(PointerEventKind::Down(PointerButton::Primary), 0, 0),
+        &renderer,
+    )?;
+    assert_eq!(down.messages, [true]);
+    assert!(down.handled);
+    assert!(tree.captured_pointer().is_some());
+    let up = tree.dispatch(
+        &view,
+        &pointer(PointerEventKind::Up(PointerButton::Primary), 12, 0),
+        &renderer,
+    )?;
+    assert!(up.messages.is_empty());
+    assert!(up.handled);
+    assert_eq!(tree.captured_pointer(), None);
+
     let outcome = tree.dispatch(
         &view,
         &key(UiKey::Character(' '), KeyModifiers::NONE),

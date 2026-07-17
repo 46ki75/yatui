@@ -12,7 +12,8 @@ use arborui_terminal::{
     TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
 };
 use arborui_ui::{
-    Invalidation, ReconcileError, UiCommitError, UiError, UiEvent, UiPreparationTimings, UiTree,
+    Invalidation, PreparedUiFrame, ReconcileError, UiCommitError, UiError, UiEvent,
+    UiPreparationTimings, UiTree,
 };
 
 use crate::{
@@ -227,6 +228,27 @@ impl<BackendError: std::error::Error + 'static> std::error::Error for RuntimeErr
             Self::Ui(error) => Some(error),
             Self::Commit(error) => Some(error),
             Self::Restore { error, .. } => Some(error.as_ref()),
+        }
+    }
+}
+
+enum FrameFinalizationError {
+    Commit(UiCommitError),
+    Ui(UiError),
+}
+
+impl FrameFinalizationError {
+    fn into_headless(self) -> HeadlessRenderError {
+        match self {
+            Self::Commit(error) => HeadlessRenderError::Commit(error),
+            Self::Ui(error) => HeadlessRenderError::Ui(error),
+        }
+    }
+
+    fn into_runtime<BackendError>(self) -> RuntimeError<BackendError> {
+        match self {
+            Self::Commit(error) => RuntimeError::Commit(error),
+            Self::Ui(error) => RuntimeError::Ui(error),
         }
     }
 }
@@ -524,12 +546,12 @@ impl<A: Application> AppRunner<A> {
                 .prepare(&view, self.viewport, &mut self.renderer)
                 .map_err(HeadlessRenderError::Ui)?
         };
-        self.ui
-            .commit(prepared, &mut self.renderer)
-            .map_err(HeadlessRenderError::Commit)?;
-        self.invalidation = Invalidation::None;
-        self.refresh_after_commit()
-            .map_err(HeadlessRenderError::Ui)?;
+        self.commit_and_refresh(
+            prepared,
+            |runner, prepared| runner.ui.commit(prepared, &mut runner.renderer),
+            Self::refresh_after_commit,
+        )
+        .map_err(FrameFinalizationError::into_headless)?;
         Ok(HeadlessRenderOutcome::Committed)
     }
 
@@ -554,15 +576,17 @@ impl<A: Application> AppRunner<A> {
                 .map_err(HeadlessRenderError::Ui)?;
             (prepared, preparation, view_construction)
         };
-        let commit_started = Instant::now();
-        self.ui
-            .commit(prepared, &mut self.renderer)
-            .map_err(HeadlessRenderError::Commit)?;
-        let commit = commit_started.elapsed();
-        self.invalidation = Invalidation::None;
-        let (refresh_view, post_commit) = self
-            .refresh_after_commit_timed()
-            .map_err(HeadlessRenderError::Ui)?;
+        let (commit, (refresh_view, post_commit)) = self
+            .commit_and_refresh(
+                prepared,
+                |runner, prepared| {
+                    let commit_started = Instant::now();
+                    runner.ui.commit(prepared, &mut runner.renderer)?;
+                    Ok(commit_started.elapsed())
+                },
+                Self::refresh_after_commit_timed,
+            )
+            .map_err(FrameFinalizationError::into_headless)?;
         view_construction = view_construction.saturating_add(refresh_view);
         let timings = render_timings(
             total_started.elapsed(),
@@ -583,20 +607,8 @@ impl<A: Application> AppRunner<A> {
         &mut self,
         session: &mut TerminalSession<B>,
     ) -> Result<TerminalRenderOutcome, RuntimeError<B::Error>> {
-        let width_policy = session.capabilities().width_policy;
-        if self.renderer.width_policy() != width_policy {
-            self.renderer.set_width_policy(width_policy);
-            self.invalidation.request(Invalidation::Layout);
-        }
-        if session.take_full_repaint_required() {
-            self.renderer.invalidate();
-            self.invalidation.request(Invalidation::Paint);
-        }
-        let viewport = session.size().map_err(RuntimeError::Backend)?;
-        if viewport != self.viewport {
-            self.viewport = viewport;
-            self.invalidation.request(Invalidation::Layout);
-        }
+        self.synchronize_terminal(session)
+            .map_err(RuntimeError::Backend)?;
         if self.invalidation == Invalidation::None {
             return Ok(TerminalRenderOutcome::Idle);
         }
@@ -620,28 +632,15 @@ impl<A: Application> AppRunner<A> {
             }
         };
 
-        match outcome {
-            WriteOutcome::Applied => {
-                if let Err(error) = self.ui.commit(prepared, &mut self.renderer) {
-                    self.renderer.invalidate();
-                    self.invalidation.request(Invalidation::Paint);
-                    return Err(RuntimeError::Commit(error));
-                }
-                self.invalidation = Invalidation::None;
-                self.refresh_after_commit().map_err(RuntimeError::Ui)?;
-                Ok(TerminalRenderOutcome::Applied)
-            }
-            WriteOutcome::Deferred => {
-                self.ui.discard(prepared, &mut self.renderer);
-                Ok(TerminalRenderOutcome::Deferred)
-            }
-            WriteOutcome::StateUnknown => {
-                self.ui.discard(prepared, &mut self.renderer);
-                self.renderer.invalidate();
-                self.invalidation.request(Invalidation::Paint);
-                Ok(TerminalRenderOutcome::StateUnknown)
-            }
-        }
+        let (outcome, _) = self
+            .finalize_terminal_transaction(
+                prepared,
+                outcome,
+                |runner, prepared| runner.ui.commit(prepared, &mut runner.renderer),
+                Self::refresh_after_commit,
+            )
+            .map_err(FrameFinalizationError::into_runtime)?;
+        Ok(outcome)
     }
 
     /// Attempts one transactional terminal write while recording phase durations.
@@ -650,20 +649,8 @@ impl<A: Application> AppRunner<A> {
         session: &mut TerminalSession<B>,
     ) -> Result<TimedRender<TerminalRenderOutcome>, RuntimeError<B::Error>> {
         let total_started = Instant::now();
-        let width_policy = session.capabilities().width_policy;
-        if self.renderer.width_policy() != width_policy {
-            self.renderer.set_width_policy(width_policy);
-            self.invalidation.request(Invalidation::Layout);
-        }
-        if session.take_full_repaint_required() {
-            self.renderer.invalidate();
-            self.invalidation.request(Invalidation::Paint);
-        }
-        let viewport = session.size().map_err(RuntimeError::Backend)?;
-        if viewport != self.viewport {
-            self.viewport = viewport;
-            self.invalidation.request(Invalidation::Layout);
-        }
+        self.synchronize_terminal(session)
+            .map_err(RuntimeError::Backend)?;
         if self.invalidation == Invalidation::None {
             return Ok(TimedRender {
                 outcome: TerminalRenderOutcome::Idle,
@@ -695,37 +682,25 @@ impl<A: Application> AppRunner<A> {
             }
         };
 
-        let (outcome, commit, post_commit) = match outcome {
-            WriteOutcome::Applied => {
-                let commit_started = Instant::now();
-                if let Err(error) = self.ui.commit(prepared, &mut self.renderer) {
-                    self.renderer.invalidate();
-                    self.invalidation.request(Invalidation::Paint);
-                    return Err(RuntimeError::Commit(error));
-                }
-                let commit = commit_started.elapsed();
-                self.invalidation = Invalidation::None;
-                let (refresh_view, post_commit) = self
-                    .refresh_after_commit_timed()
-                    .map_err(RuntimeError::Ui)?;
+        let (outcome, finalization) = self
+            .finalize_terminal_transaction(
+                prepared,
+                outcome,
+                |runner, prepared| {
+                    let commit_started = Instant::now();
+                    runner.ui.commit(prepared, &mut runner.renderer)?;
+                    Ok(commit_started.elapsed())
+                },
+                Self::refresh_after_commit_timed,
+            )
+            .map_err(FrameFinalizationError::into_runtime)?;
+        let (commit, post_commit) =
+            if let Some((commit, (refresh_view, post_commit))) = finalization {
                 view_construction = view_construction.saturating_add(refresh_view);
-                (
-                    TerminalRenderOutcome::Applied,
-                    Some(commit),
-                    Some(post_commit),
-                )
-            }
-            WriteOutcome::Deferred => {
-                self.ui.discard(prepared, &mut self.renderer);
-                (TerminalRenderOutcome::Deferred, None, None)
-            }
-            WriteOutcome::StateUnknown => {
-                self.ui.discard(prepared, &mut self.renderer);
-                self.renderer.invalidate();
-                self.invalidation.request(Invalidation::Paint);
-                (TerminalRenderOutcome::StateUnknown, None, None)
-            }
-        };
+                (Some(commit), Some(post_commit))
+            } else {
+                (None, None)
+            };
         let timings = render_timings(
             total_started.elapsed(),
             view_construction,
@@ -847,6 +822,69 @@ impl<A: Application> AppRunner<A> {
                 Ok(())
             }
             Err(error) => Err(error),
+        }
+    }
+
+    fn synchronize_terminal<B: TerminalBackend>(
+        &mut self,
+        session: &mut TerminalSession<B>,
+    ) -> Result<(), B::Error> {
+        let width_policy = session.capabilities().width_policy;
+        if self.renderer.width_policy() != width_policy {
+            self.renderer.set_width_policy(width_policy);
+            self.invalidation.request(Invalidation::Layout);
+        }
+        if session.take_full_repaint_required() {
+            self.renderer.invalidate();
+            self.invalidation.request(Invalidation::Paint);
+        }
+        let viewport = session.size()?;
+        if viewport != self.viewport {
+            self.viewport = viewport;
+            self.invalidation.request(Invalidation::Layout);
+        }
+        Ok(())
+    }
+
+    fn commit_and_refresh<C, R>(
+        &mut self,
+        prepared: PreparedUiFrame,
+        commit: impl FnOnce(&mut Self, PreparedUiFrame) -> Result<C, UiCommitError>,
+        refresh: impl FnOnce(&mut Self) -> Result<R, UiError>,
+    ) -> Result<(C, R), FrameFinalizationError> {
+        let commit_result = commit(self, prepared).map_err(FrameFinalizationError::Commit)?;
+        self.invalidation = Invalidation::None;
+        let refresh_result = refresh(self).map_err(FrameFinalizationError::Ui)?;
+        Ok((commit_result, refresh_result))
+    }
+
+    fn finalize_terminal_transaction<C, R>(
+        &mut self,
+        prepared: PreparedUiFrame,
+        outcome: WriteOutcome,
+        commit: impl FnOnce(&mut Self, PreparedUiFrame) -> Result<C, UiCommitError>,
+        refresh: impl FnOnce(&mut Self) -> Result<R, UiError>,
+    ) -> Result<(TerminalRenderOutcome, Option<(C, R)>), FrameFinalizationError> {
+        match outcome {
+            WriteOutcome::Applied => match self.commit_and_refresh(prepared, commit, refresh) {
+                Ok(finalization) => Ok((TerminalRenderOutcome::Applied, Some(finalization))),
+                Err(FrameFinalizationError::Commit(error)) => {
+                    self.renderer.invalidate();
+                    self.invalidation.request(Invalidation::Paint);
+                    Err(FrameFinalizationError::Commit(error))
+                }
+                Err(error @ FrameFinalizationError::Ui(_)) => Err(error),
+            },
+            WriteOutcome::Deferred => {
+                self.ui.discard(prepared, &mut self.renderer);
+                Ok((TerminalRenderOutcome::Deferred, None))
+            }
+            WriteOutcome::StateUnknown => {
+                self.ui.discard(prepared, &mut self.renderer);
+                self.renderer.invalidate();
+                self.invalidation.request(Invalidation::Paint);
+                Ok((TerminalRenderOutcome::StateUnknown, None))
+            }
         }
     }
 
@@ -1728,6 +1766,37 @@ mod tests {
                 .patches
                 .len(),
             1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn untimed_empty_patch_commits_without_backend_output() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut terminal, state) = session([])?;
+        let mut runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
+        assert_eq!(
+            runner.render_terminal(&mut terminal)?,
+            TerminalRenderOutcome::Applied
+        );
+        runner.enqueue(ViewMessage::Invalidate(Invalidation::Paint));
+        assert_eq!(runner.process_pending().updates, 1);
+
+        assert_eq!(
+            runner.render_terminal(&mut terminal)?,
+            TerminalRenderOutcome::Applied
+        );
+        assert_eq!(
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .patches
+                .len(),
+            1
+        );
+        assert_eq!(
+            runner.render_terminal(&mut terminal)?,
+            TerminalRenderOutcome::Idle
         );
         Ok(())
     }

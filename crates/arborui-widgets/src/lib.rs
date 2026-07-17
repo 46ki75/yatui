@@ -3,6 +3,8 @@
 //! Interactive widgets are controlled: application state is borrowed for one
 //! view and updates are emitted as owned messages.
 
+mod activation;
+
 /// Bordered content containers.
 pub mod block;
 /// Focusable push buttons.

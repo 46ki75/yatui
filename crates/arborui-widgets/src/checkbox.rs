@@ -1,6 +1,8 @@
 use arborui_core::{Modifier, Style};
 use arborui_layout::LayoutStyle;
-use arborui_ui::{Element, EventPhase, KeyAction, PointerButton, PointerEventKind, UiEvent, UiKey};
+use arborui_ui::{Element, EventPhase};
+
+use crate::activation::handle_activation;
 
 /// Creates a focusable controlled checkbox builder.
 #[must_use]
@@ -96,28 +98,8 @@ impl<'a, Message: 'a> Checkbox<'a, Message> {
         .style(self.style)
         .focus_style(self.focus_style)
         .focusable(true)
-        .on_event(EventPhase::Target, move |event, context| match event {
-            UiEvent::Pointer(pointer)
-                if pointer.kind == PointerEventKind::Down(PointerButton::Primary) =>
-            {
-                context.capture_pointer();
-                context.emit(on_change(next));
-                context.mark_handled();
-            }
-            UiEvent::Pointer(pointer)
-                if pointer.kind == PointerEventKind::Up(PointerButton::Primary) =>
-            {
-                context.release_pointer();
-                context.mark_handled();
-            }
-            UiEvent::Key(key)
-                if key.action == KeyAction::Press
-                    && matches!(key.key, UiKey::Enter | UiKey::Character(' ')) =>
-            {
-                context.emit(on_change(next));
-                context.mark_handled();
-            }
-            _ => {}
+        .on_event(EventPhase::Target, move |event, context| {
+            handle_activation(event, context, || on_change(next));
         });
         if let Some(order) = self.focus_order {
             element = element.focus_order(order);
