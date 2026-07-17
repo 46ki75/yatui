@@ -556,7 +556,9 @@ without rendering or transactional correctness regressions.
 
 ### Milestone 13: Release And Ecosystem Maturity
 
-Status: planned.
+Status: in progress. Dependency and security policy is checked for all three
+Cargo workspaces through a shared `cargo-deny` configuration and a dedicated CI
+matrix. The remaining release-governance and public-contract work is planned.
 
 Deliver:
 

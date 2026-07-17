@@ -28,6 +28,11 @@ test-pty:
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
+deny:
+    cargo deny --locked check
+    cargo deny --locked --manifest-path fuzz/Cargo.toml check
+    cargo deny --locked --manifest-path comparisons/collection-lab-ratatui/Cargo.toml check
+
 ci: fmt-check lint test doc
 
 test-cov:

@@ -17,7 +17,7 @@ bypassed accidentally.
 - Update the coordinated workspace version and internal exact dependency
   versions.
 - Add release and compatibility notes, including any MSRV change.
-- Run `just ci`, `just test-pty`, `just package-check`, and
+- Run `just ci`, `just deny`, `just test-pty`, `just package-check`, and
   `just publish-dry-run`.
 - Confirm scheduled fuzzing and benchmark runs are healthy.
 - Tag the verified commit as `vX.Y.Z`.
