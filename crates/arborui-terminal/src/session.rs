@@ -92,8 +92,9 @@ impl<B: TerminalBackend> TerminalSession<B> {
             return Ok(());
         }
         self.full_repaint_required = true;
-        self.backend.restore()?;
         self.suspended = true;
+        self.cleanup_required = true;
+        self.backend.restore()?;
         self.cleanup_required = false;
         self.full_repaint_required = true;
         Ok(())
@@ -396,6 +397,23 @@ mod tests {
 
         assert!(session.suspend().is_err());
         assert!(session.take_full_repaint_required());
+        Ok(())
+    }
+
+    #[test]
+    fn resume_reapplies_state_after_failed_suspend() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_restore_on: 1,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan.clone()), TerminalState::fullscreen())?;
+
+        assert!(session.suspend().is_err());
+        session.resume()?;
+
+        assert!(session.is_active());
+        assert_eq!(plan.applied.load(Ordering::Relaxed), 2);
         Ok(())
     }
 

@@ -156,6 +156,24 @@ impl NodeStore {
         Some(removed)
     }
 
+    pub(crate) fn iter(&self, tree: u64) -> impl Iterator<Item = (LayoutNodeId, &Node)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, slot)| {
+                slot.node.as_ref().map(|node| {
+                    (
+                        LayoutNodeId {
+                            tree,
+                            index,
+                            generation: slot.generation,
+                        },
+                        node,
+                    )
+                })
+            })
+    }
+
     #[cfg(test)]
     const fn len(&self) -> usize {
         self.len
@@ -177,10 +195,13 @@ impl Clone for LayoutTree {
             tree_id: self.tree_id,
             nodes: self.nodes.clone(),
             layouts: self.layouts.clone(),
-            engine: self
-                .engine
-                .as_ref()
-                .map(|engine| Rc::new(RefCell::new(engine.borrow().clone()))),
+            engine: self.engine.as_ref().map(|engine| {
+                let cloned = match engine.try_borrow() {
+                    Ok(engine) => engine.clone(),
+                    Err(_) => engine::Engine::from_nodes(self.tree_id, &self.nodes),
+                };
+                Rc::new(RefCell::new(cloned))
+            }),
         }
     }
 }
@@ -817,6 +838,27 @@ mod tests {
         cloned.compute(root, Size::new(8, 1), |_, _| Size::new(5, 1))?;
 
         assert_eq!(source.layout(leaf)?.bounds.width, 3);
+        assert_eq!(cloned.layout(leaf)?.bounds.width, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_clone_during_staged_measurement_uses_an_independent_engine()
+    -> Result<(), LayoutError> {
+        let mut source = LayoutTree::new();
+        let leaf = source.add(LayoutStyle::default());
+        let root = source.add_with_children(LayoutStyle::default(), &[leaf])?;
+        let mut staged = source.clone_for_staging();
+        let mut cloned = None;
+
+        staged.compute(root, Size::new(8, 1), |_, _| {
+            cloned = Some(source.clone());
+            Size::new(3, 1)
+        })?;
+
+        let mut cloned = cloned.expect("the leaf measurement should clone the source tree");
+        assert!(!source.shares_engine_with(&cloned));
+        cloned.compute(root, Size::new(8, 1), |_, _| Size::new(5, 1))?;
         assert_eq!(cloned.layout(leaf)?.bounds.width, 5);
         Ok(())
     }

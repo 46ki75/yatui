@@ -32,6 +32,19 @@ impl Engine {
         }
     }
 
+    pub(crate) fn from_nodes(tree_id: u64, nodes: &NodeStore) -> Self {
+        let mut engine = Self::new();
+        for (id, node) in nodes.iter(tree_id) {
+            engine.add(id, node.style);
+        }
+        for (id, node) in nodes.iter(tree_id) {
+            engine
+                .set_children(id, &node.children)
+                .expect("retained layout nodes must form a valid engine tree");
+        }
+        engine
+    }
+
     pub(crate) fn add(&mut self, node: LayoutNodeId, style: LayoutStyle) {
         if self.backend_ids.len() <= node.index() {
             self.backend_ids.resize(node.index() + 1, None);
