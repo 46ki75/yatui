@@ -262,6 +262,7 @@ impl Clone for UiTree {
     fn clone(&self) -> Self {
         let mut cloned = self.clone_for_staging();
         cloned.owner = UiTreeOwner::default();
+        cloned.layout_tree = self.layout_tree.clone();
         cloned
     }
 }
@@ -801,7 +802,7 @@ impl UiTree {
             pending_focus_change: self.pending_focus_change,
             revision: self.revision,
             renderer_state: self.renderer_state,
-            layout_tree: self.layout_tree.clone(),
+            layout_tree: self.layout_tree.clone_for_staging(),
         }
     }
 

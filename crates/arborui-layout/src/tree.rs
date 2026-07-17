@@ -1,4 +1,6 @@
+use std::cell::{RefCell, RefMut};
 use std::fmt;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use arborui_core::{Insets, Rect, Size};
@@ -161,12 +163,26 @@ impl NodeStore {
 }
 
 /// Mutable tree of layout styles and computed integer geometry.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct LayoutTree {
     tree_id: u64,
     nodes: NodeStore,
     layouts: Vec<Option<ComputedLayout>>,
-    engine: Option<engine::Engine>,
+    engine: Option<Rc<RefCell<engine::Engine>>>,
+}
+
+impl Clone for LayoutTree {
+    fn clone(&self) -> Self {
+        Self {
+            tree_id: self.tree_id,
+            nodes: self.nodes.clone(),
+            layouts: self.layouts.clone(),
+            engine: self
+                .engine
+                .as_ref()
+                .map(|engine| Rc::new(RefCell::new(engine.borrow().clone()))),
+        }
+    }
 }
 
 impl LayoutTree {
@@ -181,8 +197,28 @@ impl LayoutTree {
         }
     }
 
+    /// Clones logical state while sharing derived engine caches until mutation.
+    ///
+    /// This supports transactional staging with the same intrinsic measurement
+    /// source. Callers must invalidate changed intrinsic content before layout.
+    /// Do not access either tree reentrantly from a measurement callback.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clone_for_staging(&self) -> Self {
+        Self {
+            tree_id: self.tree_id,
+            nodes: self.nodes.clone(),
+            layouts: self.layouts.clone(),
+            engine: self.engine.clone(),
+        }
+    }
+
     /// Adds an unattached node.
     pub fn add(&mut self, style: LayoutStyle) -> LayoutNodeId {
+        if self.engine.is_some() {
+            self.detach_engine()
+                .expect("an initialized layout engine can be detached");
+        }
         if self.tree_id == 0 {
             self.tree_id = next_tree_id();
         }
@@ -200,7 +236,9 @@ impl LayoutTree {
             self.layouts[id.index()] = None;
         }
         self.engine
-            .get_or_insert_with(engine::Engine::new)
+            .get_or_insert_with(|| Rc::new(RefCell::new(engine::Engine::new())));
+        self.engine_mut()
+            .expect("an initialized layout engine can be mutated")
             .add(id, style);
         id
     }
@@ -222,8 +260,10 @@ impl LayoutTree {
 
     /// Replaces a node's style.
     pub fn set_style(&mut self, node: LayoutNodeId, style: LayoutStyle) -> Result<(), LayoutError> {
-        self.node_mut(node)?.style = style;
+        self.node(node)?;
+        self.detach_engine()?;
         self.engine_mut()?.set_style(node, style)?;
+        self.node_mut(node)?.style = style;
         self.layouts.fill(None);
         Ok(())
     }
@@ -266,6 +306,7 @@ impl LayoutTree {
         parent: LayoutNodeId,
         children: &[LayoutNodeId],
     ) -> Result<(), LayoutError> {
+        self.detach_engine()?;
         let old_children = std::mem::take(&mut self.node_mut(parent)?.children);
         for child in &old_children {
             if self.node(*child)?.parent == Some(parent) {
@@ -310,7 +351,8 @@ impl LayoutTree {
     {
         self.node(root)?;
         self.layouts.resize(self.nodes.slots.len(), None);
-        let engine = self.engine.as_mut().ok_or(LayoutError::UnknownNode(root))?;
+        let engine = Rc::clone(self.engine.as_ref().ok_or(LayoutError::UnknownNode(root))?);
+        let mut engine = engine.try_borrow_mut().map_err(engine_borrow_error)?;
         engine.compute(&self.nodes, root, viewport, measure, &mut self.layouts)?;
         Ok(())
     }
@@ -342,9 +384,11 @@ impl LayoutTree {
                 })
             })
             .collect::<Vec<_>>();
-        let engine = self.engine_mut()?;
-        for node in nodes {
-            engine.invalidate(node)?;
+        {
+            let mut engine = self.engine_mut()?;
+            for node in nodes {
+                engine.invalidate(node)?;
+            }
         }
         self.layouts.fill(None);
         Ok(())
@@ -353,6 +397,7 @@ impl LayoutTree {
     /// Removes a node and its complete subtree.
     pub fn remove(&mut self, node: LayoutNodeId) -> Result<(), LayoutError> {
         let parent = self.node(node)?.parent;
+        self.detach_engine()?;
         if let Some(parent) = parent {
             let children = self
                 .node(parent)?
@@ -399,18 +444,36 @@ impl LayoutTree {
             .ok_or(LayoutError::UnknownNode(node))
     }
 
-    fn engine_mut(&mut self) -> Result<&mut engine::Engine, LayoutError> {
+    fn engine_mut(&mut self) -> Result<RefMut<'_, engine::Engine>, LayoutError> {
+        self.detach_engine()?;
         self.engine
-            .as_mut()
-            .ok_or_else(|| LayoutError::Engine("layout engine is not initialized".into()))
+            .as_ref()
+            .ok_or_else(engine_not_initialized)?
+            .try_borrow_mut()
+            .map_err(engine_borrow_error)
+    }
+
+    fn detach_engine(&mut self) -> Result<(), LayoutError> {
+        let shared = self.engine.as_mut().ok_or_else(engine_not_initialized)?;
+        if Rc::strong_count(shared) > 1 {
+            let detached = shared.try_borrow().map_err(engine_borrow_error)?.clone();
+            *shared = Rc::new(RefCell::new(detached));
+        }
+        Ok(())
     }
 
     fn remove_subtree(&mut self, node: LayoutNodeId) {
+        if self.engine.is_some() {
+            self.detach_engine()
+                .expect("an initialized layout engine can be detached");
+        }
         let Some(removed) = self.nodes.remove(node) else {
             return;
         };
-        if let Some(engine) = &mut self.engine {
-            engine.remove(node);
+        if self.engine.is_some() {
+            self.engine_mut()
+                .expect("an initialized layout engine can be mutated")
+                .remove(node);
         }
         self.layouts[node.index()] = None;
         for child in removed.children {
@@ -422,6 +485,22 @@ impl LayoutTree {
             }
         }
     }
+
+    #[cfg(test)]
+    fn shares_engine_with(&self, other: &Self) -> bool {
+        self.engine
+            .as_ref()
+            .zip(other.engine.as_ref())
+            .is_some_and(|(left, right)| Rc::ptr_eq(left, right))
+    }
+}
+
+fn engine_not_initialized() -> LayoutError {
+    LayoutError::Engine("layout engine is not initialized".into())
+}
+
+fn engine_borrow_error<T>(_: T) -> LayoutError {
+    LayoutError::Engine("layout engine is already borrowed".into())
 }
 
 #[cfg(test)]
@@ -693,6 +772,68 @@ mod tests {
         })?;
         assert!(measurements > 0);
         assert_eq!(tree.layout(leaf)?.bounds.width, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn cloned_trees_share_computed_cache_until_semantic_mutation() -> Result<(), LayoutError> {
+        let mut source = LayoutTree::new();
+        let child =
+            source.add(LayoutStyle::new().size(Dimension::percent(100), Dimension::cells(1)));
+        let root = source.add_with_children(LayoutStyle::default(), &[child])?;
+        source.compute(root, Size::new(8, 1), |_, _| Size::ZERO)?;
+
+        let mut staged = source.clone_for_staging();
+        assert!(source.shares_engine_with(&staged));
+
+        staged.compute(root, Size::new(13, 1), |_, _| Size::ZERO)?;
+        assert!(source.shares_engine_with(&staged));
+        assert_eq!(source.layout(child)?.bounds.width, 8);
+        assert_eq!(staged.layout(child)?.bounds.width, 13);
+
+        staged.set_style(
+            child,
+            LayoutStyle::new().size(Dimension::cells(3), Dimension::cells(1)),
+        )?;
+        assert!(!source.shares_engine_with(&staged));
+        staged.compute(root, Size::new(13, 1), |_, _| Size::ZERO)?;
+        source.compute(root, Size::new(8, 1), |_, _| Size::ZERO)?;
+        assert_eq!(source.layout(child)?.bounds.width, 8);
+        assert_eq!(staged.layout(child)?.bounds.width, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_clones_keep_measurement_caches_independent() -> Result<(), LayoutError> {
+        let mut source = LayoutTree::new();
+        let leaf = source.add(LayoutStyle::default());
+        let root = source.add_with_children(LayoutStyle::default(), &[leaf])?;
+        let mut cloned = source.clone();
+
+        source.compute(root, Size::new(8, 1), |_, _| Size::new(3, 1))?;
+        cloned.compute(root, Size::new(8, 1), |_, _| Size::new(5, 1))?;
+
+        assert_eq!(source.layout(leaf)?.bounds.width, 3);
+        assert_eq!(cloned.layout(leaf)?.bounds.width, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn reentrant_staging_mutation_fails_before_changing_logical_state() -> Result<(), LayoutError> {
+        let mut source = LayoutTree::new();
+        let leaf = source.add(LayoutStyle::default());
+        let root = source.add_with_children(LayoutStyle::default(), &[leaf])?;
+        let mut staged = source.clone_for_staging();
+        let changed = LayoutStyle::new().size(Dimension::cells(5), Dimension::cells(1));
+        let mut mutation = None;
+
+        staged.compute(root, Size::new(8, 1), |_, _| {
+            mutation = Some(source.set_style(leaf, changed));
+            Size::new(3, 1)
+        })?;
+
+        assert!(matches!(mutation, Some(Err(LayoutError::Engine(_)))));
+        assert_eq!(source.node(leaf)?.style, LayoutStyle::default());
         Ok(())
     }
 

@@ -88,6 +88,33 @@ fn initialized_renderer(size: Size) -> Renderer {
 
 fn repeated_layout(criterion: &mut Criterion) {
     const VIEWPORT: Size = Size::new(120, 40);
+    let mut staging_group = criterion.benchmark_group("ui/repeated_layout_staging");
+    for (depth, node_count) in [(5, 63_u64), (8, 511), (11, 4_095)] {
+        staging_group.throughput(Throughput::Elements(node_count));
+        staging_group.bench_with_input(
+            BenchmarkId::new("balanced", node_count),
+            &depth,
+            |bencher, depth| {
+                let view = balanced_layout_tree(*depth);
+                let (mut tree, mut renderer, root) = initialized_ui(&view, VIEWPORT);
+                bencher.iter_custom(|iterations| {
+                    let mut staging = Duration::ZERO;
+                    for _ in 0..iterations {
+                        assert!(tree.invalidate(root, Invalidation::Layout));
+                        let (prepared, timings) = tree
+                            .prepare_timed(&view, VIEWPORT, &mut renderer)
+                            .expect("benchmark frame must prepare");
+                        staging = staging.saturating_add(black_box(timings.staging_reconciliation));
+                        tree.commit(prepared, &mut renderer)
+                            .expect("benchmark frame must commit");
+                    }
+                    staging
+                });
+            },
+        );
+    }
+    staging_group.finish();
+
     let mut phase_group = criterion.benchmark_group("ui/repeated_layout_phase");
     for (depth, node_count) in [(5, 63_u64), (8, 511), (11, 4_095)] {
         phase_group.throughput(Throughput::Elements(node_count));
