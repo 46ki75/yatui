@@ -6,32 +6,35 @@ const ACTION_ITEM_COUNT: usize = 100_000;
 const ITEM_COUNTS: [usize; 3] = [1_000, 100_000, 1_000_000];
 const FRAMEWORKS: [&str; 2] = ["arborui", "ratatui"];
 const MODES: [&str; 2] = ["fixed", "variable"];
-const ACTIONS: [&str; 6] = [
+const ACTIONS: [&str; 7] = [
     "cold",
     "page-down",
     "resize",
+    "resize-storm",
     "selection",
     "reverse",
     "unchanged-redraw",
 ];
-const TABLE_ACTIONS: [&str; 7] = [
+const TABLE_ACTIONS: [&str; 8] = [
     "cold",
     "page-down",
     "resize",
+    "resize-storm",
     "selection",
     "visible-update",
     "offscreen-update",
     "unchanged-redraw",
 ];
-const LOG_ACTIONS: [&str; 6] = [
+const LOG_ACTIONS: [&str; 7] = [
     "cold",
     "page-up",
     "resize",
+    "resize-storm",
     "append-following",
     "append-paused",
     "unchanged-redraw",
 ];
-const OVERLAY_ACTIONS: [&str; 7] = [
+const OVERLAY_ACTIONS: [&str; 8] = [
     "cold",
     "open",
     "focus-next",
@@ -39,15 +42,17 @@ const OVERLAY_ACTIONS: [&str; 7] = [
     "confirm",
     "background-activation",
     "resize-open",
+    "resize-storm",
 ];
 const OVERLAY_ITEM_COUNT: usize = 1;
-const UNICODE_ACTIONS: [&str; 7] = [
+const UNICODE_ACTIONS: [&str; 8] = [
     "model",
     "cold",
     "initial-render",
     "shift-boundary",
     "replace-wide",
     "resize-narrow",
+    "resize-storm",
     "unchanged-redraw",
 ];
 const UNICODE_ITEM_COUNT: usize = 1;

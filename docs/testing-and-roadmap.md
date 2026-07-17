@@ -506,8 +506,12 @@ attribution. The completed matched Unicode
 workload adds combining, CJK, ZWJ emoji, flag, variation-selector, and ambiguous
 content; atomic wide-grapheme boundary clipping; wide-to-narrow replacement;
 exact semantic and character parity through resize; and latency, production
-output, retained-memory, and ArborUI phase evidence. Resize storms, live ingress,
-and finer-grained incremental work remain open.
+output, retained-memory, and ArborUI phase evidence. The completed matched
+eight-frame resize storms alternate narrow/wide and short/tall dimensions across
+collections, table, paused log, open overlay, and Unicode; require exact parity
+after every frame; and add complete-turn latency, full-repaint output, peak and
+retained memory, and ArborUI phase evidence. Live ingress and finer-grained
+incremental work remain open.
 
 Deliver:
 

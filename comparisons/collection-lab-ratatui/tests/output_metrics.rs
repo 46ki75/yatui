@@ -6,11 +6,13 @@ use std::{
 };
 
 use arborui::{
-    Capabilities, CrosstermBackend as ArboruiCrosstermBackend, FramePatch, TerminalBackend,
+    Application, Capabilities, CrosstermBackend as ArboruiCrosstermBackend, FramePatch,
+    TerminalBackend,
 };
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
-    RatatuiUnicodeLab, draw_test_log_terminal, draw_test_overlay_terminal,
+    ComparisonAction, OVERLAY_RESIZE_STORM, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab,
+    RatatuiTableLab, RatatuiUnicodeLab, STANDARD_RESIZE_STORM, UNICODE_RESIZE_STORM,
+    UNICODE_RESIZE_STORM_OFFSET, draw_test_log_terminal, draw_test_overlay_terminal,
     draw_test_table_terminal, draw_test_terminal,
 };
 use arborui_example_collection_lab::{
@@ -395,6 +397,221 @@ fn reports_unicode_ansi_output_metrics() {
     }
 }
 
+#[test]
+fn reports_resize_storm_ansi_output_metrics() {
+    println!("| Workload | Framework | ANSI bytes | Writer calls | Flushes |");
+    println!("| --- | --- | ---: | ---: | ---: |");
+
+    for (workload, arborui, ratatui) in [
+        (
+            "Collection fixed",
+            arborui_collection_resize_storm(CollectionMode::Fixed),
+            ratatui_collection_resize_storm(CollectionMode::Fixed),
+        ),
+        (
+            "Collection variable",
+            arborui_collection_resize_storm(CollectionMode::Variable),
+            ratatui_collection_resize_storm(CollectionMode::Variable),
+        ),
+        (
+            "Table",
+            arborui_table_resize_storm(),
+            ratatui_table_resize_storm(),
+        ),
+        (
+            "Scrolling log paused",
+            arborui_log_resize_storm(),
+            ratatui_log_resize_storm(),
+        ),
+        (
+            "Overlay open",
+            arborui_overlay_resize_storm(),
+            ratatui_overlay_resize_storm(),
+        ),
+        (
+            "Unicode",
+            arborui_unicode_resize_storm(),
+            ratatui_unicode_resize_storm(),
+        ),
+    ] {
+        println!(
+            "| {workload} | ArborUI | {} | {} | {} |",
+            arborui.bytes, arborui.writes, arborui.flushes
+        );
+        println!(
+            "| {workload} | Ratatui | {} | {} | {} |",
+            ratatui.bytes, ratatui.writes, ratatui.flushes
+        );
+        assert!(arborui.bytes > 0);
+        assert!(ratatui.bytes > 0);
+        assert_eq!(arborui.flushes, STANDARD_RESIZE_STORM.len());
+        assert_eq!(ratatui.flushes, STANDARD_RESIZE_STORM.len() * 2);
+    }
+}
+
+fn arborui_collection_resize_storm(mode: CollectionMode) -> OutputMetrics {
+    let mut application = TestApp::new(
+        CollectionLab::new(mode, ITEM_COUNT, usize::from(HEIGHT - 4)),
+        ArboruiSize::new(WIDTH, HEIGHT),
+    );
+    application.send(Message::SelectActive);
+    serialize_arborui_resize_storm(&mut application, &STANDARD_RESIZE_STORM)
+}
+
+fn arborui_table_resize_storm() -> OutputMetrics {
+    let mut application = TestApp::new(
+        TableLab::new(ITEM_COUNT, WIDTH, HEIGHT),
+        ArboruiSize::new(WIDTH, HEIGHT),
+    );
+    application.send(TableAction::SelectActive);
+    serialize_arborui_resize_storm(&mut application, &STANDARD_RESIZE_STORM)
+}
+
+fn arborui_log_resize_storm() -> OutputMetrics {
+    let mut application = TestApp::new(
+        LogLab::new(ITEM_COUNT, ITEM_COUNT.saturating_mul(2), WIDTH, HEIGHT),
+        ArboruiSize::new(WIDTH, HEIGHT),
+    );
+    application.send(LogAction::PageUp);
+    serialize_arborui_resize_storm(&mut application, &STANDARD_RESIZE_STORM)
+}
+
+fn arborui_overlay_resize_storm() -> OutputMetrics {
+    let mut application = TestApp::new(
+        OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+        ArboruiSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+    );
+    application.key(KeyCode::Enter);
+    application.key(KeyCode::Tab);
+    serialize_arborui_resize_storm(&mut application, &OVERLAY_RESIZE_STORM)
+}
+
+fn arborui_unicode_resize_storm() -> OutputMetrics {
+    let mut application = TestApp::new(
+        UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+        ArboruiSize::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+    );
+    for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
+        application.send(UnicodeAction::ShiftRight);
+    }
+    serialize_arborui_resize_storm(&mut application, &UNICODE_RESIZE_STORM)
+}
+
+fn serialize_arborui_resize_storm<A: Application>(
+    application: &mut TestApp<A>,
+    trace: &[(u16, u16)],
+) -> OutputMetrics {
+    let previous_count = application.frame_patches().len();
+    for &(width, height) in trace {
+        application.resize(ArboruiSize::new(width, height));
+    }
+    let patches = &application.frame_patches()[previous_count..];
+    assert_eq!(patches.len(), trace.len());
+    assert!(patches.iter().all(|patch| patch.full_repaint));
+    serialize_arborui_patches(patches)
+}
+
+fn ratatui_collection_resize_storm(mode: CollectionMode) -> OutputMetrics {
+    let mut application = RatatuiCollectionLab::new(mode, ITEM_COUNT, WIDTH, HEIGHT);
+    let mut terminal =
+        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+    draw_test_terminal(&mut terminal, &mut application).expect("initial frame must draw");
+    application.apply(ComparisonAction::SelectActive);
+    draw_test_terminal(&mut terminal, &mut application).expect("prepared frame must draw");
+    let mut frames = Vec::with_capacity(STANDARD_RESIZE_STORM.len());
+    for (width, height) in STANDARD_RESIZE_STORM {
+        terminal.backend_mut().resize(width, height);
+        application.apply(ComparisonAction::Resize { width, height });
+        draw_test_terminal(&mut terminal, &mut application).expect("resize frame must draw");
+        frames.push(terminal.backend().buffer().clone());
+    }
+    serialize_ratatui_full_frames(&frames)
+}
+
+fn ratatui_table_resize_storm() -> OutputMetrics {
+    let mut application = RatatuiTableLab::new(ITEM_COUNT, WIDTH, HEIGHT);
+    let mut terminal =
+        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+    draw_test_table_terminal(&mut terminal, &mut application).expect("initial frame must draw");
+    application.apply(TableAction::SelectActive);
+    draw_test_table_terminal(&mut terminal, &mut application)
+        .expect("prepared table frame must draw");
+    let mut frames = Vec::with_capacity(STANDARD_RESIZE_STORM.len());
+    for (width, height) in STANDARD_RESIZE_STORM {
+        terminal.backend_mut().resize(width, height);
+        application.apply(TableAction::Resize { width, height });
+        draw_test_table_terminal(&mut terminal, &mut application).expect("table frame must draw");
+        frames.push(terminal.backend().buffer().clone());
+    }
+    serialize_ratatui_full_frames(&frames)
+}
+
+fn ratatui_log_resize_storm() -> OutputMetrics {
+    let mut application =
+        RatatuiLogLab::new(ITEM_COUNT, ITEM_COUNT.saturating_mul(2), WIDTH, HEIGHT);
+    let mut terminal =
+        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
+    draw_test_log_terminal(&mut terminal, &mut application).expect("initial frame must draw");
+    application.apply(LogAction::PageUp);
+    draw_test_log_terminal(&mut terminal, &mut application).expect("prepared frame must draw");
+    let mut frames = Vec::with_capacity(STANDARD_RESIZE_STORM.len());
+    for (width, height) in STANDARD_RESIZE_STORM {
+        terminal.backend_mut().resize(width, height);
+        application.apply(LogAction::Resize { width, height });
+        draw_test_log_terminal(&mut terminal, &mut application).expect("log frame must draw");
+        frames.push(terminal.backend().buffer().clone());
+    }
+    serialize_ratatui_full_frames(&frames)
+}
+
+fn ratatui_overlay_resize_storm() -> OutputMetrics {
+    let mut application = RatatuiOverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
+    let mut terminal = Terminal::new(TestBackend::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))
+        .expect("test terminal must open");
+    application.apply(OverlayAction::Open);
+    application.focus_next();
+    draw_test_overlay_terminal(&mut terminal, &application).expect("prepared frame must draw");
+    let mut frames = Vec::with_capacity(OVERLAY_RESIZE_STORM.len());
+    for (width, height) in OVERLAY_RESIZE_STORM {
+        terminal.backend_mut().resize(width, height);
+        application.apply(OverlayAction::Resize { width, height });
+        draw_test_overlay_terminal(&mut terminal, &application).expect("overlay frame must draw");
+        frames.push(terminal.backend().buffer().clone());
+    }
+    serialize_ratatui_full_frames(&frames)
+}
+
+fn ratatui_unicode_resize_storm() -> OutputMetrics {
+    let mut application = RatatuiUnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
+    let mut terminal = Terminal::new(TestBackend::new(UNICODE_WIDTH, UNICODE_HEIGHT))
+        .expect("test terminal must open");
+    for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
+        application.apply(UnicodeAction::ShiftRight);
+    }
+    let mut frames = Vec::with_capacity(UNICODE_RESIZE_STORM.len());
+    for (width, height) in UNICODE_RESIZE_STORM {
+        terminal.backend_mut().resize(width, height);
+        application.apply(UnicodeAction::Resize { width, height });
+        frames.push(draw_ratatui_unicode_buffer(&mut terminal, &application));
+    }
+    serialize_ratatui_full_frames(&frames)
+}
+
+fn serialize_ratatui_full_frames(frames: &[Buffer]) -> OutputMetrics {
+    let writer = CountingWriter::default();
+    let metrics = writer.clone();
+    let mut backend = RatatuiCrosstermBackend::new(writer);
+    for frame in frames {
+        let blank = Buffer::empty(frame.area);
+        backend.clear().expect("Ratatui backend must clear");
+        backend
+            .draw(blank.diff_iter(frame))
+            .expect("Ratatui full frame must serialize");
+        Backend::flush(&mut backend).expect("Ratatui output must flush");
+    }
+    metrics.metrics()
+}
+
 fn arborui_metrics(mode: CollectionMode, scenario: Scenario) -> OutputMetrics {
     let mut application = TestApp::new(
         CollectionLab::new(mode, ITEM_COUNT, usize::from(HEIGHT - 4)),
@@ -439,14 +656,20 @@ fn patch_after(
 }
 
 fn serialize_arborui(patch: &FramePatch) -> OutputMetrics {
+    serialize_arborui_patches(std::slice::from_ref(patch))
+}
+
+fn serialize_arborui_patches(patches: &[FramePatch]) -> OutputMetrics {
     let writer = CountingWriter::default();
     let metrics = writer.clone();
     let mut backend = ArboruiCrosstermBackend::new(writer)
         .expect("ArborUI production backend must open")
         .with_capabilities(Capabilities::default());
-    backend
-        .write_patch(patch)
-        .expect("ArborUI patch must serialize");
+    for patch in patches {
+        backend
+            .write_patch(patch)
+            .expect("ArborUI patch must serialize");
+    }
     metrics.metrics()
 }
 

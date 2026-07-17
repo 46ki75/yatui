@@ -378,9 +378,25 @@ framework memory is 62,268 bytes for ArborUI and 51,840 for Ratatui.
 
 ArborUI Unicode phase totals are 106,794 ns initially, 81,016 for the boundary
 shift, 82,964 for replacement, and 90,305 for resize. Paint is the largest named
-phase in every case, but all three action turns also perform layout; resize-storm
-and live-ingress evidence remain necessary before selecting another local
-optimization.
+phase in every case, but all three action turns also perform layout.
+
+The completed resize-storm slice applies eight complete alternating narrow/wide
+and short/tall resize turns before returning to each workload's base size. Exact
+semantic and character parity is checked after every intermediate frame for
+fixed and variable collections, responsive table, paused log, open overlay, and
+Unicode clipping. Optimized ArborUI/Ratatui storm totals are 877/132 microseconds
+for fixed collection, 902/151 for variable collection, 1.717/1.722 milliseconds
+for table, 1.328 milliseconds/180 microseconds for paused log, 914/185
+microseconds for open overlay, and 718/134 microseconds for Unicode.
+
+Every ArborUI resize is an accepted full repaint. Aggregate production bytes
+range from 30,556 to 46,777 for ArborUI and 7,202 to 10,908 for Ratatui across
+the six cases. ArborUI uses eight flushes; Ratatui's measured production clear
+plus full draw uses sixteen. ArborUI's complete-storm phase totals range from
+698,620 ns for Unicode to 1,503,069 ns for table. Layout dominates the
+table, paint dominates collection and Unicode, and layout and paint are close
+for the paused log and overlay. This does not identify one workload-independent
+local optimization; live-ingress and queue-latency evidence remain necessary.
 
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
@@ -477,7 +493,8 @@ The Unicode evidence confirms atomic clipping and wide-to-narrow cleanup through
 the public application boundary. Its active turns show the same layout-and-paint
 shape as structural overlay work, with paint dominant in the phase report. This
 closes the planned Unicode-heavy evidence slice without changing the renderer;
-it does not yet establish behavior under repeated resize churn or queue latency.
+the matched resize storm now establishes repeated resize churn, while queue
+latency remains open.
 
 ## Limits And Next Evidence
 
@@ -502,7 +519,8 @@ and backend output, while active scrolling remains substantially faster in the
 direct Ratatui adapter. The matched overlay slice adds exact modal character and
 semantic parity plus latency, output, memory, and phase evidence. The matched
 Unicode slice adds combining, wide, joined, flag, variation-selector, and
-ambiguous content at clipping boundaries. Resize storms and live ingress should
-establish whether the same bottlenecks generalize before another local
-optimization. Select and reusable table requirements can extend the pilot
+ambiguous content at clipping boundaries. The matched resize storms show that
+layout and paint weight varies by workload.
+Live ingress should establish queue-latency and backpressure costs before another
+local optimization. Select and reusable table requirements can extend the pilot
 separately.

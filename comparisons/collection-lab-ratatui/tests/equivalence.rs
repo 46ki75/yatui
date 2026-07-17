@@ -9,11 +9,115 @@ use arborui_test::{Key, KeyCode, KeyEventKind, KeyModifiers, Size, TestApp};
 use ratatui::{Terminal, backend::TestBackend};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, CountingBackend, LogSemanticState, OverlayFocus, OverlaySemanticState,
-    RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab, RatatuiUnicodeLab,
-    SemanticState, TableSemanticState, UnicodeSemanticState, draw_terminal, draw_test_frame,
-    draw_test_log_frame, draw_test_overlay_frame, draw_test_table_frame, draw_test_unicode_frame,
+    ComparisonAction, CountingBackend, LogSemanticState, OVERLAY_RESIZE_STORM, OverlayFocus,
+    OverlaySemanticState, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
+    RatatuiUnicodeLab, STANDARD_RESIZE_STORM, SemanticState, TableSemanticState,
+    UNICODE_RESIZE_STORM, UNICODE_RESIZE_STORM_OFFSET, UnicodeSemanticState, draw_terminal,
+    draw_test_frame, draw_test_log_frame, draw_test_overlay_frame, draw_test_table_frame,
+    draw_test_unicode_frame,
 };
+
+#[test]
+fn resize_storm_matches_semantics_and_characters_after_every_frame() {
+    for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
+        let mut arborui = TestApp::new(CollectionLab::new(mode, 100_000, 8), Size::new(48, 12));
+        let mut ratatui = RatatuiCollectionLab::new(mode, 100_000, 48, 12);
+        let mut terminal =
+            Terminal::new(TestBackend::new(48, 12)).expect("test terminal must open");
+        apply_arborui(&mut arborui, ComparisonAction::SelectActive);
+        ratatui.apply(ComparisonAction::SelectActive);
+        let baseline = arborui_state(&arborui);
+        for _ in 0..2 {
+            for (width, height) in STANDARD_RESIZE_STORM {
+                apply_arborui(&mut arborui, ComparisonAction::Resize { width, height });
+                ratatui.apply(ComparisonAction::Resize { width, height });
+                terminal.backend_mut().resize(width, height);
+                let frame = draw_test_frame(&mut terminal, &mut ratatui)
+                    .expect("collection frame must draw");
+                assert_eq!(arborui.frame().size(), Size::new(width, height));
+                assert_eq!(arborui_state(&arborui), ratatui.semantic_state());
+                assert_eq!(arborui.frame().characters(), frame);
+            }
+            assert_eq!(arborui_state(&arborui), baseline);
+        }
+    }
+
+    let mut arborui = TestApp::new(TableLab::new(100_000, 48, 12), Size::new(48, 12));
+    let mut ratatui = RatatuiTableLab::new(100_000, 48, 12);
+    let mut terminal = Terminal::new(TestBackend::new(48, 12)).expect("test terminal must open");
+    apply_arborui_table(&mut arborui, TableAction::SelectActive);
+    ratatui.apply(TableAction::SelectActive);
+    let baseline = arborui_table_state(&arborui);
+    for _ in 0..2 {
+        for (width, height) in STANDARD_RESIZE_STORM {
+            let action = TableAction::Resize { width, height };
+            apply_arborui_table(&mut arborui, action);
+            ratatui.apply(action);
+            terminal.backend_mut().resize(width, height);
+            assert_eq!(arborui.frame().size(), Size::new(width, height));
+            assert_table_frame(&arborui, &mut ratatui, &mut terminal);
+        }
+        assert_eq!(arborui_table_state(&arborui), baseline);
+    }
+
+    let mut arborui = TestApp::new(LogLab::new(100_000, 200_000, 48, 12), Size::new(48, 12));
+    let mut ratatui = RatatuiLogLab::new(100_000, 200_000, 48, 12);
+    let mut terminal = Terminal::new(TestBackend::new(48, 12)).expect("test terminal must open");
+    apply_arborui_log(&mut arborui, LogAction::PageUp);
+    ratatui.apply(LogAction::PageUp);
+    let baseline = arborui_log_state(&arborui);
+    for _ in 0..2 {
+        for (width, height) in STANDARD_RESIZE_STORM {
+            let action = LogAction::Resize { width, height };
+            apply_arborui_log(&mut arborui, action);
+            ratatui.apply(action);
+            terminal.backend_mut().resize(width, height);
+            assert_eq!(arborui.frame().size(), Size::new(width, height));
+            assert_log_frame(&arborui, &mut ratatui, &mut terminal);
+            assert!(!ratatui.semantic_state().follows_tail);
+        }
+        assert_eq!(arborui_log_state(&arborui), baseline);
+    }
+
+    let mut arborui = TestApp::new(OverlayLab::new(40, 12), Size::new(40, 12));
+    let mut ratatui = RatatuiOverlayLab::new(40, 12);
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal must open");
+    arborui.key(KeyCode::Enter);
+    arborui.key(KeyCode::Tab);
+    ratatui.apply(OverlayAction::Open);
+    ratatui.focus_next();
+    let baseline = arborui_overlay_state(&arborui);
+    for _ in 0..2 {
+        for (width, height) in OVERLAY_RESIZE_STORM {
+            arborui.resize(Size::new(width, height));
+            ratatui.apply(OverlayAction::Resize { width, height });
+            terminal.backend_mut().resize(width, height);
+            assert_eq!(arborui.frame().size(), Size::new(width, height));
+            assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+            assert_eq!(ratatui.semantic_state().focus, OverlayFocus::Cancel);
+        }
+        assert_eq!(arborui_overlay_state(&arborui), baseline);
+    }
+
+    let mut arborui = TestApp::new(UnicodeLab::new(36, 10), Size::new(36, 10));
+    let mut ratatui = RatatuiUnicodeLab::new(36, 10);
+    let mut terminal = Terminal::new(TestBackend::new(36, 10)).expect("test terminal must open");
+    for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
+        arborui.send(UnicodeAction::ShiftRight);
+        ratatui.apply(UnicodeAction::ShiftRight);
+    }
+    let baseline = arborui_unicode_state(&arborui);
+    for _ in 0..2 {
+        for (width, height) in UNICODE_RESIZE_STORM {
+            arborui.resize(Size::new(width, height));
+            ratatui.apply(UnicodeAction::Resize { width, height });
+            terminal.backend_mut().resize(width, height);
+            assert_eq!(arborui.frame().size(), Size::new(width, height));
+            assert_unicode_frame(&arborui, &ratatui, &mut terminal);
+        }
+        assert_eq!(arborui_unicode_state(&arborui), baseline);
+    }
+}
 
 #[test]
 fn canonical_unicode_trace_matches_semantics_and_characters() {

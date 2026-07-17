@@ -23,6 +23,45 @@ const TABLE_HEADER: &str = "Arrows/Page/Home/End move | Enter selects | u update
 const LOG_HEADER: &str = "Up/Down/Page/Home/End scroll | a appends | q quit";
 const UNICODE_HEADER: &str = "Arrows shift | r replace | q quit";
 
+/// Deterministic eight-frame resize storm for collection, table, and log workloads.
+pub const STANDARD_RESIZE_STORM: [(u16, u16); 8] = [
+    (42, 10),
+    (56, 16),
+    (36, 9),
+    (60, 15),
+    (46, 11),
+    (54, 14),
+    (44, 13),
+    (48, 12),
+];
+
+/// Deterministic eight-frame resize storm for the open overlay workload.
+pub const OVERLAY_RESIZE_STORM: [(u16, u16); 8] = [
+    (34, 10),
+    (48, 16),
+    (28, 9),
+    (52, 15),
+    (38, 11),
+    (46, 14),
+    (36, 13),
+    (40, 12),
+];
+
+/// Deterministic eight-frame resize storm for the Unicode clipping workload.
+pub const UNICODE_RESIZE_STORM: [(u16, u16); 8] = [
+    (30, 10),
+    (44, 14),
+    (24, 10),
+    (48, 13),
+    (34, 11),
+    (42, 12),
+    (32, 10),
+    (36, 10),
+];
+
+/// Nonzero Unicode cell offset retained throughout the resize-storm trace.
+pub const UNICODE_RESIZE_STORM_OFFSET: usize = 8;
+
 /// One framework-neutral action in the matched scenario.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComparisonAction {

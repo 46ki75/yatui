@@ -3,8 +3,9 @@
 use std::{error::Error, hint::black_box};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
-    RatatuiUnicodeLab, draw_test_log_terminal, draw_test_overlay_terminal,
+    ComparisonAction, OVERLAY_RESIZE_STORM, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab,
+    RatatuiTableLab, RatatuiUnicodeLab, STANDARD_RESIZE_STORM, UNICODE_RESIZE_STORM,
+    UNICODE_RESIZE_STORM_OFFSET, draw_test_log_terminal, draw_test_overlay_terminal,
     draw_test_table_terminal, draw_test_terminal, draw_test_unicode_terminal,
 };
 use arborui_example_collection_lab::{
@@ -68,6 +69,7 @@ enum Scenario {
     ShiftBoundary,
     ReplaceWide,
     ResizeNarrow,
+    ResizeStorm,
 }
 
 struct Metrics {
@@ -154,6 +156,7 @@ fn measure_arborui_collection(
         }
         Scenario::PageDown
         | Scenario::Resize
+        | Scenario::ResizeStorm
         | Scenario::Selection
         | Scenario::Reverse
         | Scenario::UnchangedRedraw => {
@@ -166,6 +169,9 @@ fn measure_arborui_collection(
                 application.send(Message::SelectActive);
                 application.send(Message::Home);
             }
+            if matches!(scenario, Scenario::ResizeStorm) {
+                application.send(Message::SelectActive);
+            }
             measure(move || {
                 match scenario {
                     Scenario::PageDown => {
@@ -173,6 +179,11 @@ fn measure_arborui_collection(
                     }
                     Scenario::Resize => {
                         application.resize(Size::new(WIDTH, RESIZED_HEIGHT));
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in STANDARD_RESIZE_STORM {
+                            application.resize(Size::new(width, height));
+                        }
                     }
                     Scenario::Selection => {
                         application.send(Message::SelectActive);
@@ -244,12 +255,16 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
         }
         Scenario::PageDown
         | Scenario::Resize
+        | Scenario::ResizeStorm
         | Scenario::Selection
         | Scenario::UnchangedRedraw
         | Scenario::VisibleUpdate
         | Scenario::OffscreenUpdate => {
             let mut application =
                 TestApp::new(TableLab::new(item_count, WIDTH, HEIGHT), base_size());
+            if matches!(scenario, Scenario::ResizeStorm) {
+                application.send(TableAction::SelectActive);
+            }
             measure(move || {
                 match scenario {
                     Scenario::PageDown => {
@@ -257,6 +272,11 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     }
                     Scenario::Resize => {
                         application.resize(Size::new(WIDTH, RESIZED_HEIGHT));
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in STANDARD_RESIZE_STORM {
+                            application.resize(Size::new(width, height));
+                        }
                     }
                     Scenario::Selection => {
                         application.send(TableAction::SelectActive);
@@ -335,6 +355,7 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
         }
         Scenario::PageUp
         | Scenario::Resize
+        | Scenario::ResizeStorm
         | Scenario::AppendFollowing
         | Scenario::AppendPaused
         | Scenario::UnchangedRedraw => {
@@ -342,7 +363,7 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
                 LogLab::new(item_count, history_limit, WIDTH, HEIGHT),
                 base_size(),
             );
-            if matches!(scenario, Scenario::AppendPaused) {
+            if matches!(scenario, Scenario::AppendPaused | Scenario::ResizeStorm) {
                 application.send(LogAction::PageUp);
             }
             measure(move || {
@@ -352,6 +373,11 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
                     }
                     Scenario::Resize => {
                         application.resize(Size::new(WIDTH, RESIZED_HEIGHT));
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in STANDARD_RESIZE_STORM {
+                            application.resize(Size::new(width, height));
+                        }
                     }
                     Scenario::AppendFollowing | Scenario::AppendPaused => {
                         application.send(LogAction::Append {
@@ -427,7 +453,8 @@ fn measure_arborui_overlay(scenario: Scenario) -> Metrics {
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => {
+        | Scenario::ResizeOpen
+        | Scenario::ResizeStorm => {
             let mut application = arborui_overlay_fixture(scenario);
             measure(move || {
                 match scenario {
@@ -443,6 +470,11 @@ fn measure_arborui_overlay(scenario: Scenario) -> Metrics {
                     Scenario::ResizeOpen => {
                         application
                             .resize(Size::new(OVERLAY_RESIZED_WIDTH, OVERLAY_RESIZED_HEIGHT));
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in OVERLAY_RESIZE_STORM {
+                            application.resize(Size::new(width, height));
+                        }
                     }
                     _ => unreachable!("setup scenarios are handled separately"),
                 }
@@ -476,6 +508,7 @@ fn measure_arborui_unicode(scenario: Scenario) -> Metrics {
         Scenario::ShiftBoundary
         | Scenario::ReplaceWide
         | Scenario::ResizeNarrow
+        | Scenario::ResizeStorm
         | Scenario::UnchangedRedraw => {
             let mut application = arborui_unicode_fixture(scenario);
             measure(move || {
@@ -488,6 +521,11 @@ fn measure_arborui_unicode(scenario: Scenario) -> Metrics {
                     }
                     Scenario::ResizeNarrow => {
                         application.resize(Size::new(UNICODE_NARROW_WIDTH, UNICODE_HEIGHT));
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in UNICODE_RESIZE_STORM {
+                            application.resize(Size::new(width, height));
+                        }
                     }
                     Scenario::UnchangedRedraw => {
                         application.send(UnicodeAction::ShiftLeft);
@@ -571,6 +609,7 @@ fn measure_ratatui_collection(
         }
         Scenario::PageDown
         | Scenario::Resize
+        | Scenario::ResizeStorm
         | Scenario::Selection
         | Scenario::Reverse
         | Scenario::UnchangedRedraw => {
@@ -586,6 +625,11 @@ fn measure_ratatui_collection(
                         .expect("selection fixture must draw");
                 }
             }
+            if matches!(scenario, Scenario::ResizeStorm) {
+                application.apply(ComparisonAction::SelectActive);
+                draw_test_terminal(&mut terminal, &mut application)
+                    .expect("resize-storm baseline must draw");
+            }
             measure(move || {
                 match scenario {
                     Scenario::PageDown => application.apply(ComparisonAction::PageDown),
@@ -595,6 +639,14 @@ fn measure_ratatui_collection(
                             width: WIDTH,
                             height: RESIZED_HEIGHT,
                         });
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in STANDARD_RESIZE_STORM {
+                            terminal.backend_mut().resize(width, height);
+                            application.apply(ComparisonAction::Resize { width, height });
+                            draw_test_terminal(&mut terminal, &mut application)
+                                .expect("resize-storm frame must draw");
+                        }
                     }
                     Scenario::Selection => application.apply(ComparisonAction::SelectActive),
                     Scenario::Reverse => application.apply(ComparisonAction::Reverse),
@@ -619,7 +671,9 @@ fn measure_ratatui_collection(
                         unreachable!("other workload scenarios are handled separately")
                     }
                 }
-                draw_test_terminal(&mut terminal, &mut application).expect("frame must draw");
+                if !matches!(scenario, Scenario::ResizeStorm) {
+                    draw_test_terminal(&mut terminal, &mut application).expect("frame must draw");
+                }
                 assert_bounded(application.semantic_state().constructed_rows);
                 black_box((application, terminal))
             })
@@ -668,6 +722,7 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
         }
         Scenario::PageDown
         | Scenario::Resize
+        | Scenario::ResizeStorm
         | Scenario::Selection
         | Scenario::UnchangedRedraw
         | Scenario::VisibleUpdate
@@ -677,6 +732,11 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
                 Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
             draw_test_table_terminal(&mut terminal, &mut application)
                 .expect("initial table frame must draw");
+            if matches!(scenario, Scenario::ResizeStorm) {
+                application.apply(TableAction::SelectActive);
+                draw_test_table_terminal(&mut terminal, &mut application)
+                    .expect("resize-storm table baseline must draw");
+            }
             measure(move || {
                 match scenario {
                     Scenario::PageDown => application.apply(TableAction::PageDown),
@@ -686,6 +746,14 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
                             width: WIDTH,
                             height: RESIZED_HEIGHT,
                         });
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in STANDARD_RESIZE_STORM {
+                            terminal.backend_mut().resize(width, height);
+                            application.apply(TableAction::Resize { width, height });
+                            draw_test_table_terminal(&mut terminal, &mut application)
+                                .expect("resize-storm table frame must draw");
+                        }
                     }
                     Scenario::Selection => application.apply(TableAction::SelectActive),
                     Scenario::UnchangedRedraw => application.apply(TableAction::Home),
@@ -716,8 +784,10 @@ fn measure_ratatui_table(scenario: Scenario, item_count: usize) -> Metrics {
                     | Scenario::ReplaceWide
                     | Scenario::ResizeNarrow => unreachable!("scenario is handled separately"),
                 }
-                draw_test_table_terminal(&mut terminal, &mut application)
-                    .expect("table frame must draw");
+                if !matches!(scenario, Scenario::ResizeStorm) {
+                    draw_test_table_terminal(&mut terminal, &mut application)
+                        .expect("table frame must draw");
+                }
                 assert_bounded(application.semantic_state().constructed_rows);
                 black_box((application, terminal))
             })
@@ -764,6 +834,7 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
         }
         Scenario::PageUp
         | Scenario::Resize
+        | Scenario::ResizeStorm
         | Scenario::AppendFollowing
         | Scenario::AppendPaused
         | Scenario::UnchangedRedraw => {
@@ -772,7 +843,7 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
                 Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal must open");
             draw_test_log_terminal(&mut terminal, &mut application)
                 .expect("initial scrolling-log frame must draw");
-            if matches!(scenario, Scenario::AppendPaused) {
+            if matches!(scenario, Scenario::AppendPaused | Scenario::ResizeStorm) {
                 application.apply(LogAction::PageUp);
                 draw_test_log_terminal(&mut terminal, &mut application)
                     .expect("paused scrolling-log baseline must draw");
@@ -786,6 +857,14 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
                             width: WIDTH,
                             height: RESIZED_HEIGHT,
                         });
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in STANDARD_RESIZE_STORM {
+                            terminal.backend_mut().resize(width, height);
+                            application.apply(LogAction::Resize { width, height });
+                            draw_test_log_terminal(&mut terminal, &mut application)
+                                .expect("resize-storm log frame must draw");
+                        }
                     }
                     Scenario::AppendFollowing | Scenario::AppendPaused => {
                         application.apply(LogAction::Append {
@@ -814,8 +893,10 @@ fn measure_ratatui_log(scenario: Scenario, item_count: usize) -> Metrics {
                         unreachable!("scenario is handled separately")
                     }
                 }
-                draw_test_log_terminal(&mut terminal, &mut application)
-                    .expect("scrolling-log frame must draw");
+                if !matches!(scenario, Scenario::ResizeStorm) {
+                    draw_test_log_terminal(&mut terminal, &mut application)
+                        .expect("scrolling-log frame must draw");
+                }
                 assert_bounded(application.semantic_state().constructed_rows);
                 black_box((application, terminal))
             })
@@ -865,7 +946,8 @@ fn measure_ratatui_overlay(scenario: Scenario) -> Metrics {
         | Scenario::Cancel
         | Scenario::Confirm
         | Scenario::BackgroundActivation
-        | Scenario::ResizeOpen => {
+        | Scenario::ResizeOpen
+        | Scenario::ResizeStorm => {
             let (mut application, mut terminal) = ratatui_overlay_fixture(scenario);
             measure(move || {
                 match scenario {
@@ -891,10 +973,20 @@ fn measure_ratatui_overlay(scenario: Scenario) -> Metrics {
                             height: OVERLAY_RESIZED_HEIGHT,
                         });
                     }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in OVERLAY_RESIZE_STORM {
+                            terminal.backend_mut().resize(width, height);
+                            application.apply(OverlayAction::Resize { width, height });
+                            draw_test_overlay_terminal(&mut terminal, &application)
+                                .expect("resize-storm overlay frame must draw");
+                        }
+                    }
                     _ => unreachable!("setup scenarios are handled separately"),
                 }
-                draw_test_overlay_terminal(&mut terminal, &application)
-                    .expect("overlay frame must draw");
+                if !matches!(scenario, Scenario::ResizeStorm) {
+                    draw_test_overlay_terminal(&mut terminal, &application)
+                        .expect("overlay frame must draw");
+                }
                 assert_ratatui_overlay_bounded(&application, &terminal);
                 black_box((application, terminal))
             })
@@ -929,6 +1021,7 @@ fn measure_ratatui_unicode(scenario: Scenario) -> Metrics {
         Scenario::ShiftBoundary
         | Scenario::ReplaceWide
         | Scenario::ResizeNarrow
+        | Scenario::ResizeStorm
         | Scenario::UnchangedRedraw => {
             let (mut application, mut terminal) = ratatui_unicode_fixture(scenario);
             measure(move || {
@@ -947,6 +1040,14 @@ fn measure_ratatui_unicode(scenario: Scenario) -> Metrics {
                             width: UNICODE_NARROW_WIDTH,
                             height: UNICODE_HEIGHT,
                         });
+                    }
+                    Scenario::ResizeStorm => {
+                        for (width, height) in UNICODE_RESIZE_STORM {
+                            terminal.backend_mut().resize(width, height);
+                            application.apply(UnicodeAction::Resize { width, height });
+                            draw_test_unicode_terminal(&mut terminal, &application)
+                                .expect("resize-storm unicode frame must draw");
+                        }
                     }
                     Scenario::UnchangedRedraw => {
                         application.apply(UnicodeAction::ShiftLeft);
@@ -970,8 +1071,10 @@ fn measure_ratatui_unicode(scenario: Scenario) -> Metrics {
                     | Scenario::BackgroundActivation
                     | Scenario::ResizeOpen => unreachable!("scenario is handled separately"),
                 }
-                draw_test_unicode_terminal(&mut terminal, &application)
-                    .expect("unicode frame must draw");
+                if !matches!(scenario, Scenario::ResizeStorm) {
+                    draw_test_unicode_terminal(&mut terminal, &application)
+                        .expect("unicode frame must draw");
+                }
                 assert_ratatui_unicode_bounded(&application, &terminal);
                 black_box((application, terminal))
             })
@@ -1033,8 +1136,15 @@ fn arborui_overlay_fixture(scenario: Scenario) -> TestApp<OverlayLab> {
         overlay_size(),
     );
     match scenario {
-        Scenario::FocusNext | Scenario::Cancel | Scenario::Confirm | Scenario::ResizeOpen => {
+        Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::ResizeOpen
+        | Scenario::ResizeStorm => {
             application.key(KeyCode::Enter);
+            if matches!(scenario, Scenario::ResizeStorm) {
+                application.key(KeyCode::Tab);
+            }
         }
         Scenario::BackgroundActivation => {
             application.key(KeyCode::Tab);
@@ -1053,10 +1163,19 @@ fn ratatui_overlay_fixture(scenario: Scenario) -> (RatatuiOverlayLab, Terminal<T
     draw_test_overlay_terminal(&mut terminal, &application)
         .expect("initial overlay frame must draw");
     match scenario {
-        Scenario::FocusNext | Scenario::Cancel | Scenario::Confirm | Scenario::ResizeOpen => {
+        Scenario::FocusNext
+        | Scenario::Cancel
+        | Scenario::Confirm
+        | Scenario::ResizeOpen
+        | Scenario::ResizeStorm => {
             application.apply(OverlayAction::Open);
             draw_test_overlay_terminal(&mut terminal, &application)
                 .expect("open overlay baseline must draw");
+            if matches!(scenario, Scenario::ResizeStorm) {
+                application.focus_next();
+                draw_test_overlay_terminal(&mut terminal, &application)
+                    .expect("focused overlay baseline must draw");
+            }
         }
         Scenario::BackgroundActivation => {
             application.focus_next();
@@ -1078,6 +1197,11 @@ fn arborui_unicode_fixture(scenario: Scenario) -> TestApp<UnicodeLab> {
     match scenario {
         Scenario::ShiftBoundary => {
             for _ in 0..UNICODE_SHIFT_BOUNDARY_OFFSET {
+                application.send(UnicodeAction::ShiftRight);
+            }
+        }
+        Scenario::ResizeStorm => {
+            for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
                 application.send(UnicodeAction::ShiftRight);
             }
         }
@@ -1112,6 +1236,11 @@ fn ratatui_unicode_fixture(scenario: Scenario) -> (RatatuiUnicodeLab, Terminal<T
     match scenario {
         Scenario::ShiftBoundary => {
             for _ in 0..UNICODE_SHIFT_BOUNDARY_OFFSET {
+                application.apply(UnicodeAction::ShiftRight);
+            }
+        }
+        Scenario::ResizeStorm => {
+            for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
                 application.apply(UnicodeAction::ShiftRight);
             }
         }
@@ -1191,11 +1320,11 @@ fn assert_ratatui_unicode_bounded(
 }
 
 const fn unicode_max_cells() -> usize {
-    UNICODE_WIDTH as usize * UNICODE_HEIGHT as usize
+    48 * 14
 }
 
 const fn overlay_max_cells() -> usize {
-    OVERLAY_RESIZED_WIDTH as usize * OVERLAY_RESIZED_HEIGHT as usize
+    52 * 16
 }
 
 fn assert_bounded(constructed_rows: usize) {
@@ -1247,6 +1376,7 @@ fn parse_scenario(value: &str) -> Result<Scenario, Box<dyn Error>> {
         "shift-boundary" => Ok(Scenario::ShiftBoundary),
         "replace-wide" => Ok(Scenario::ReplaceWide),
         "resize-narrow" => Ok(Scenario::ResizeNarrow),
+        "resize-storm" => Ok(Scenario::ResizeStorm),
         _ => Err(format!("unknown scenario: {value}").into()),
     }
 }

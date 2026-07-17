@@ -3,8 +3,9 @@
 use std::{hint::black_box, time::Duration};
 
 use arborui_comparison_collection_lab_ratatui::{
-    ComparisonAction, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
-    RatatuiUnicodeLab, draw_test_log_terminal, draw_test_overlay_terminal,
+    ComparisonAction, OVERLAY_RESIZE_STORM, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab,
+    RatatuiTableLab, RatatuiUnicodeLab, STANDARD_RESIZE_STORM, UNICODE_RESIZE_STORM,
+    UNICODE_RESIZE_STORM_OFFSET, draw_test_log_terminal, draw_test_overlay_terminal,
     draw_test_table_terminal, draw_test_terminal, draw_test_unicode_terminal,
 };
 use arborui_example_collection_lab::{
@@ -180,6 +181,163 @@ fn application_turns(criterion: &mut Criterion) {
     overlay_scenario_turns(criterion);
     unicode_cold_initial_render(criterion);
     unicode_scenario_turns(criterion);
+    resize_storm_turns(criterion);
+}
+
+fn resize_storm_turns(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("comparison/resize-storm");
+    group.throughput(Throughput::Elements(STANDARD_RESIZE_STORM.len() as u64));
+
+    for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
+        let mode_name = mode_name(mode);
+        group.bench_function(BenchmarkId::new("arborui", mode_name), |bencher| {
+            let mut application = TestApp::new(
+                CollectionLab::new(mode, ITEM_COUNT, viewport_height(BASE_HEIGHT)),
+                base_size(),
+            );
+            application.send(Message::SelectActive);
+            bencher.iter(|| {
+                for (width, height) in STANDARD_RESIZE_STORM {
+                    black_box(application.resize(Size::new(width, height)));
+                }
+            });
+        });
+        group.bench_function(BenchmarkId::new("ratatui", mode_name), |bencher| {
+            let (mut application, mut terminal) = ratatui_fixture(mode, ITEM_COUNT);
+            ratatui_turn(
+                &mut application,
+                &mut terminal,
+                ComparisonAction::SelectActive,
+            );
+            bencher.iter(|| {
+                for (width, height) in STANDARD_RESIZE_STORM {
+                    terminal.backend_mut().resize(width, height);
+                    ratatui_turn(
+                        &mut application,
+                        &mut terminal,
+                        ComparisonAction::Resize { width, height },
+                    );
+                }
+            });
+        });
+    }
+
+    group.bench_function(BenchmarkId::new("arborui", "table"), |bencher| {
+        let mut application = TestApp::new(
+            TableLab::new(ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
+            base_size(),
+        );
+        application.send(TableAction::SelectActive);
+        bencher.iter(|| {
+            for (width, height) in STANDARD_RESIZE_STORM {
+                black_box(application.resize(Size::new(width, height)));
+            }
+        });
+    });
+    group.bench_function(BenchmarkId::new("ratatui", "table"), |bencher| {
+        let (mut application, mut terminal) = ratatui_table_fixture(ITEM_COUNT);
+        ratatui_table_turn(&mut application, &mut terminal, TableAction::SelectActive);
+        bencher.iter(|| {
+            for (width, height) in STANDARD_RESIZE_STORM {
+                terminal.backend_mut().resize(width, height);
+                ratatui_table_turn(
+                    &mut application,
+                    &mut terminal,
+                    TableAction::Resize { width, height },
+                );
+            }
+        });
+    });
+
+    group.bench_function(BenchmarkId::new("arborui", "log-paused"), |bencher| {
+        let mut application = TestApp::new(
+            LogLab::new(
+                ITEM_COUNT,
+                ITEM_COUNT.saturating_mul(2),
+                BASE_WIDTH,
+                BASE_HEIGHT,
+            ),
+            base_size(),
+        );
+        application.send(LogAction::PageUp);
+        bencher.iter(|| {
+            for (width, height) in STANDARD_RESIZE_STORM {
+                black_box(application.resize(Size::new(width, height)));
+            }
+        });
+    });
+    group.bench_function(BenchmarkId::new("ratatui", "log-paused"), |bencher| {
+        let (mut application, mut terminal) =
+            ratatui_log_fixture_with_limit(ITEM_COUNT, ITEM_COUNT.saturating_mul(2));
+        ratatui_log_turn(&mut application, &mut terminal, LogAction::PageUp);
+        bencher.iter(|| {
+            for (width, height) in STANDARD_RESIZE_STORM {
+                terminal.backend_mut().resize(width, height);
+                ratatui_log_turn(
+                    &mut application,
+                    &mut terminal,
+                    LogAction::Resize { width, height },
+                );
+            }
+        });
+    });
+
+    group.bench_function(BenchmarkId::new("arborui", "overlay-open"), |bencher| {
+        let mut application = TestApp::new(
+            OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+            overlay_size(),
+        );
+        application.send(OverlayAction::Open);
+        application.key(KeyCode::Tab);
+        bencher.iter(|| {
+            for (width, height) in OVERLAY_RESIZE_STORM {
+                black_box(application.resize(Size::new(width, height)));
+            }
+        });
+    });
+    group.bench_function(BenchmarkId::new("ratatui", "overlay-open"), |bencher| {
+        let (mut application, mut terminal) = ratatui_overlay_fixture();
+        ratatui_overlay_turn(&mut application, &mut terminal, OverlayAction::Open);
+        application.focus_next();
+        draw_test_overlay_terminal(&mut terminal, &application).expect("overlay frame must draw");
+        bencher.iter(|| {
+            for (width, height) in OVERLAY_RESIZE_STORM {
+                ratatui_overlay_resize(&mut application, &mut terminal, width, height);
+            }
+        });
+    });
+
+    group.bench_function(BenchmarkId::new("arborui", "unicode"), |bencher| {
+        let mut application = TestApp::new(
+            UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
+            unicode_size(),
+        );
+        for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
+            application.send(UnicodeAction::ShiftRight);
+        }
+        bencher.iter(|| {
+            for (width, height) in UNICODE_RESIZE_STORM {
+                black_box(application.resize(Size::new(width, height)));
+            }
+        });
+    });
+    group.bench_function(BenchmarkId::new("ratatui", "unicode"), |bencher| {
+        let (mut application, mut terminal) = ratatui_unicode_fixture();
+        for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
+            ratatui_unicode_turn(&mut application, &mut terminal, UnicodeAction::ShiftRight);
+        }
+        bencher.iter(|| {
+            for (width, height) in UNICODE_RESIZE_STORM {
+                terminal.backend_mut().resize(width, height);
+                ratatui_unicode_turn(
+                    &mut application,
+                    &mut terminal,
+                    UnicodeAction::Resize { width, height },
+                );
+            }
+        });
+    });
+    group.finish();
 }
 
 fn unicode_cold_initial_render(criterion: &mut Criterion) {

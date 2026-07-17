@@ -55,6 +55,8 @@ The deterministic contract covers:
   resizing while open
 - Exact Unicode character and semantic parity through atomic left clipping,
   wide-to-narrow replacement, and 36x10 to 30x10 and 42x12 resizes
+- Exact semantic and character parity after every frame of matched eight-resize
+  storms across all five workloads
 
 The timing benchmark measures a complete logical application turn: update,
 visible-row construction, paint, and logical terminal diff. It excludes model
@@ -314,6 +316,58 @@ as a precise point comparison. Production serializer results are
 | Replace wide with narrow | 125/88/1 | 44/33/1 |
 | Resize narrow | 2797/1980/1 | 947/624/2 |
 
+## Resize-Storm Result
+
+The matched storm performs eight complete update-and-render turns and returns to
+the workload's base size. Collection, table, and paused log use
+`42x10, 56x16, 36x9, 60x15, 46x11, 54x14, 44x13, 48x12`; the open overlay uses
+`34x10, 48x16, 28x9, 52x15, 38x11, 46x14, 36x13, 40x12`; and Unicode uses
+`30x10, 44x14, 24x10, 48x13, 34x11, 42x12, 32x10, 36x10`. The Unicode trace
+keeps at least ten rows so it continues to test the existing matched fixed-panel
+contract rather than introducing a separate undersized-panel clipping policy.
+
+Fixtures begin with the Home row selected for collections and the table, Page Up
+for a paused log, open dialog plus Cancel focus for the overlay,
+and a nonzero cell offset for Unicode. Exact semantic and character parity is
+checked after every intermediate frame. One optimized 2026-07-17 run measured
+the complete eight-frame storm:
+
+| Workload | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Collection fixed | 877 us (867-887) | 132 us (131-132) |
+| Collection variable | 902 us (894-910) | 151 us (151-151) |
+| Table | 1.717 ms (1.707-1.729) | 1.722 ms (1.710-1.734) |
+| Scrolling log paused | 1.328 ms (1.318-1.337) | 180 us (178-183) |
+| Overlay open | 914 us (908-918) | 185 us (183-186) |
+| Unicode | 718 us (713-722) | 134 us (133-135) |
+
+Aggregate production output is `bytes/writer calls/flushes`. Each ArborUI frame
+is one full-repaint patch and flush; the Ratatui measurement preserves its
+existing production clear plus full-draw convention, producing two flushes per
+resize:
+
+| Workload | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Collection fixed | 45388/31948/8 | 7202/4505/16 |
+| Collection variable | 45340/31948/8 | 8819/5765/16 |
+| Table | 46777/32788/8 | 10216/6927/16 |
+| Scrolling log paused | 45407/31908/8 | 10908/7472/16 |
+| Overlay open | 39712/27796/8 | 10648/6968/16 |
+| Unicode | 30556/21516/8 | 7290/4626/16 |
+
+Isolated operation memory below is `allocated bytes/peak live bytes/retained
+bytes` after the trace returns to base size. Every measured result releases all
+tracked memory after drop:
+
+| Workload | ArborUI | Ratatui |
+| --- | ---: | ---: |
+| Collection fixed | 1971286/413832/309356 | 165888/165888/165888 |
+| Collection variable | 1775374/404904/304836 | 165888/165888/165888 |
+| Table | 5060510/476040/339724 | 1873176/255740/165888 |
+| Scrolling log paused | 2046758/420336/312644 | 165888/165888/165888 |
+| Overlay open | 1935102/356208/261444 | 139144/138280/138240 |
+| Unicode | 1388130/279952/208612 | 104240/103724/103680 |
+
 ## Allocation And Retained Memory
 
 `comparison-memory-metrics` runs every case in a separate release-mode process
@@ -472,8 +526,21 @@ The Unicode phase report is:
 Structural overlay turns expose layout, paint, and serialization costs. Focus
 movement and unchanged background activation take the no-layout path.
 Unicode shift, replacement, and resize all require layout and paint; paint is
-the largest named phase. Resize-storm and live-ingress evidence remain open
-before selecting another renderer optimization.
+the largest named phase. Complete eight-frame resize-storm phase totals are:
+
+| Workload | Update | Layout | Paint | Diff | Render total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Collection fixed | 19,514 | 213,069 | 283,167 | 100,275 | 717,009 |
+| Collection variable | 16,663 | 241,160 | 333,803 | 99,829 | 779,581 |
+| Table | 54,078 | 690,172 | 433,231 | 105,495 | 1,503,069 |
+| Scrolling log paused | 15,963 | 400,094 | 425,281 | 105,027 | 1,076,687 |
+| Overlay open | 25,971 | 383,989 | 375,897 | 89,706 | 985,232 |
+| Unicode | 13,764 | 206,532 | 308,107 | 81,765 | 698,620 |
+
+Layout dominates the table storm, paint dominates collection and Unicode, and
+layout and paint are close for the paused log and open overlay. The result does
+not support one workload-independent local optimization. Live-ingress evidence
+remains open before selecting another renderer or runtime optimization.
 
 Ordinary preparation skips layout when reconciliation reports only paint or no
 changes. Paint-only work against the exact committed renderer generation clones

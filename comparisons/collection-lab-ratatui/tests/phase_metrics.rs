@@ -3,8 +3,11 @@
 use std::time::{Duration, Instant};
 
 use arborui::{
-    AppRunner, Capabilities, HeadlessRenderOutcome, KeyAction, KeyModifiers, RenderTimings,
-    Renderer, Size, UiEvent, UiKey, UiKeyEvent,
+    AppRunner, Application, Capabilities, HeadlessRenderOutcome, KeyAction, KeyModifiers,
+    RenderTimings, Renderer, Size, UiEvent, UiKey, UiKeyEvent,
+};
+use arborui_comparison_collection_lab_ratatui::{
+    OVERLAY_RESIZE_STORM, STANDARD_RESIZE_STORM, UNICODE_RESIZE_STORM, UNICODE_RESIZE_STORM_OFFSET,
 };
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
@@ -276,6 +279,117 @@ fn reports_arborui_unicode_phase_metrics() {
             SAMPLES,
         );
     }
+}
+
+#[test]
+#[ignore = "runs the optimized resize-storm phase measurement matrix"]
+fn reports_arborui_resize_storm_phase_metrics() {
+    println!(
+        "| Workload | Scenario | Update ns | View ns | Stage/reconcile ns | Layout ns | Paint ns | Diff ns | Commit ns | Post-commit ns | Render total ns |"
+    );
+    println!("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+
+    for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
+        let mut runner = new_runner(CollectionLab::new(
+            mode,
+            ITEM_COUNT,
+            viewport_height(HEIGHT),
+        ));
+        prepare_resize_storm_runner(&mut runner);
+        send(&mut runner, Message::SelectActive);
+        render_reset(&mut runner);
+        print_totals(
+            mode,
+            "resize-storm",
+            measure_resize_storm(&mut runner, &STANDARD_RESIZE_STORM),
+            SAMPLES,
+        );
+    }
+
+    let mut table = new_table_runner(TableLab::new(ITEM_COUNT, WIDTH, HEIGHT));
+    prepare_resize_storm_runner(&mut table);
+    send_table(&mut table, TableAction::SelectActive);
+    render_table_reset(&mut table);
+    print_workload_totals(
+        "Table",
+        "resize-storm",
+        measure_resize_storm(&mut table, &STANDARD_RESIZE_STORM),
+        SAMPLES,
+    );
+
+    let mut log = new_log_runner(LogLab::new(
+        ITEM_COUNT,
+        ITEM_COUNT.saturating_mul(2),
+        WIDTH,
+        HEIGHT,
+    ));
+    prepare_resize_storm_runner(&mut log);
+    send_log(&mut log, LogAction::PageUp);
+    render_log_reset(&mut log);
+    print_workload_totals(
+        "Scrolling log paused",
+        "resize-storm",
+        measure_resize_storm(&mut log, &STANDARD_RESIZE_STORM),
+        SAMPLES,
+    );
+
+    let mut overlay = new_overlay_runner();
+    prepare_resize_storm_runner(&mut overlay);
+    send_overlay(&mut overlay, OverlayAction::Open);
+    render_overlay_reset(&mut overlay);
+    dispatch_overlay_key(&mut overlay, UiKey::Tab);
+    render_overlay_reset(&mut overlay);
+    print_workload_totals(
+        "Overlay open",
+        "resize-storm",
+        measure_resize_storm(&mut overlay, &OVERLAY_RESIZE_STORM),
+        SAMPLES,
+    );
+
+    let mut unicode = new_unicode_runner();
+    prepare_resize_storm_runner(&mut unicode);
+    for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
+        send_unicode(&mut unicode, UnicodeAction::ShiftRight);
+    }
+    render_unicode_reset(&mut unicode);
+    print_workload_totals(
+        "Unicode",
+        "resize-storm",
+        measure_resize_storm(&mut unicode, &UNICODE_RESIZE_STORM),
+        SAMPLES,
+    );
+}
+
+fn prepare_resize_storm_runner<A: Application>(runner: &mut AppRunner<A>) {
+    assert_eq!(
+        runner
+            .render_headless()
+            .expect("initial resize-storm frame must render"),
+        HeadlessRenderOutcome::Committed
+    );
+}
+
+fn measure_resize_storm<A: Application>(runner: &mut AppRunner<A>, trace: &[(u16, u16)]) -> Totals {
+    let mut totals = Totals::default();
+    for _ in 0..SAMPLES {
+        for &(width, height) in trace {
+            let update_started = Instant::now();
+            runner
+                .dispatch_ui_event(UiEvent::Resize(Size::new(width, height)))
+                .expect("resize-storm event must dispatch");
+            runner.process_pending();
+            totals.update = totals.update.saturating_add(update_started.elapsed());
+            let rendered = runner
+                .render_headless_timed()
+                .expect("resize-storm frame must render");
+            assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+            add_timings(
+                &mut totals.render,
+                rendered.timings.expect("render must include timings"),
+            );
+        }
+    }
+    totals
 }
 
 fn measure_unicode_initial_render() -> Totals {
