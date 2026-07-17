@@ -256,7 +256,12 @@ end-to-end scenarios.
 
 The initial Criterion baseline measures Unicode text under every width policy
 and 80 by 24 one-cell and full-repaint frame preparation. Deterministic tests
-gate patch shape, while scheduled CI retains statistical reports as artifacts.
+gate patch shape. Scheduled CI retains Criterion's statistical reports as
+artifacts and runs the release-mode slow-sink probe against tracked ANSI-volume,
+serializer-callback, and latency-overhead ceilings. Normal CI also enforces the
+output ceilings without wall-clock limits. Timing ceilings are broad guards on
+the scheduled GitHub-hosted runner image rather than portable performance
+guarantees.
 
 ## Implementation Milestones
 
@@ -517,8 +522,10 @@ Focus Queue burst report across capacities 1, 8, and 64. The completed slow-sink
 slice measures successful send-call start through production-serializer flush
 completion at zero, one, and five milliseconds of imposed sink delay; attributes
 the surrounding runtime phases and output volume; and proves that bounded
-ingress remains observable while a backend write blocks. Finer-grained
-incremental work and tracked regression thresholds remain open.
+ingress remains observable while a backend write blocks. Tracked regression
+limits now protect deterministic patch shape and production output volume in
+normal CI plus broad slow-sink latency overhead in scheduled CI. Finer-grained
+incremental work remains open.
 
 Deliver:
 
@@ -536,7 +543,8 @@ Deliver:
 - Optimizations selected from measured bottlenecks, potentially including
   buffer reuse, text-measurement caching, retained layout state, clean-subtree
   skipping, damaged-row scanning, and run-level terminal serialization
-- Tracked benchmark reports or regression thresholds
+- Tracked benchmark reports or regression thresholds (implemented for stable
+  renderer output shape and the scheduled slow-sink application probe)
 
 Exit criterion: performance claims are supported by reproducible
 application-level data; optimization starts only after phase measurements are

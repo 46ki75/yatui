@@ -41,3 +41,8 @@ jobs:
           path: target/criterion
           if-no-files-found: error
           retention-days: 30
+
+      - name: Enforce application regression limits
+        run: >-
+          cargo test --release -p arborui-example-focus-queue
+          --test slow_sink_metrics --all-features -- --ignored --nocapture

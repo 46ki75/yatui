@@ -449,7 +449,14 @@ almost one-for-one into write-complete and complete-render latency while queue
 and update time remain in the microsecond range. The instrumented writer locks
 shared counters on each serializer callback, so its baseline is not an
 unmodified production-writer cost; those callbacks are not operating-system
-calls. The deterministic companion test
+calls. The scheduled benchmark workflow enforces ceilings of 15,000 ANSI bytes
+and 10,000 serializer callbacks for the 64-update trace, plus latency overhead
+above the imposed sink delay of 5 milliseconds average, 10 milliseconds at
+p95, and 50 milliseconds for any one sample. These deliberately broad timing
+limits detect sustained, repeated-tail, or extreme one-sample regressions on the
+scheduled GitHub-hosted runner image without treating scheduler-sensitive
+measurements as portable performance guarantees. Normal CI enforces the output
+ceilings without applying wall-clock limits. The deterministic companion test
 blocks one flush, fills the exact two-message ingress capacity from another
 thread, observes `Full` with ownership preserved, then applies the recovered
 message in FIFO order. Existing runtime transaction tests separately prove that
@@ -590,6 +597,6 @@ Live ingress now establishes queue-latency and backpressure costs under the
 measured burst. Slow-sink evidence establishes that imposed synchronous flush
 delay transfers directly into input-to-write completion while pressure remains
 bounded and observable. Neither slice selects another local renderer
-optimization. Finer-grained incremental work and tracked regression thresholds
-remain open; select and reusable table requirements can extend the pilot
-separately.
+optimization. Tracked output and slow-sink regression limits now run in
+scheduled CI. Finer-grained incremental work remains open; select and reusable
+table requirements can extend the pilot separately.

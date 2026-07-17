@@ -24,6 +24,11 @@ const SAMPLE_COUNT: usize = 64;
 const INGRESS_CAPACITY: usize = 8;
 const VIEWPORT: Size = Size::new(72, 18);
 const BLOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_ANSI_BYTES: usize = 15_000;
+const MAX_WRITER_CALLS: usize = 10_000;
+const MAX_AVERAGE_OVERHEAD: Duration = Duration::from_millis(5);
+const MAX_P95_OVERHEAD: Duration = Duration::from_millis(10);
+const MAX_SINGLE_OVERHEAD: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct OutputMetrics {
@@ -355,6 +360,44 @@ fn measure(sink_delay: Duration) -> Report {
     }
 }
 
+fn assert_output_limits(report: &Report) {
+    assert!(
+        report.output.bytes <= MAX_ANSI_BYTES,
+        "slow-sink ANSI output exceeded its tracked ceiling: {} > {MAX_ANSI_BYTES}",
+        report.output.bytes
+    );
+    assert!(
+        report.output.writer_calls <= MAX_WRITER_CALLS,
+        "slow-sink serializer callbacks exceeded their tracked ceiling: {} > {MAX_WRITER_CALLS}",
+        report.output.writer_calls
+    );
+}
+
+fn assert_latency_limits(report: &Report) {
+    let average_overhead = report
+        .average_input_to_write
+        .saturating_sub(report.sink_delay);
+    let p95_overhead = report.p95_input_to_write.saturating_sub(report.sink_delay);
+    let max_overhead = report.max_input_to_write.saturating_sub(report.sink_delay);
+    assert!(
+        average_overhead <= MAX_AVERAGE_OVERHEAD,
+        "slow-sink average overhead exceeded its tracked ceiling: {average_overhead:?} > {MAX_AVERAGE_OVERHEAD:?}"
+    );
+    assert!(
+        p95_overhead <= MAX_P95_OVERHEAD,
+        "slow-sink p95 overhead exceeded its tracked ceiling: {p95_overhead:?} > {MAX_P95_OVERHEAD:?}"
+    );
+    assert!(
+        max_overhead <= MAX_SINGLE_OVERHEAD,
+        "slow-sink maximum overhead exceeded its tracked ceiling: {max_overhead:?} > {MAX_SINGLE_OVERHEAD:?}"
+    );
+}
+
+#[test]
+fn production_output_stays_within_regression_limits() {
+    assert_output_limits(&measure(Duration::ZERO));
+}
+
 #[test]
 fn bounded_ingress_fills_while_backend_write_is_blocked() {
     const CAPACITY: usize = 2;
@@ -463,6 +506,8 @@ fn slow_sink_metrics() {
         Duration::from_millis(5),
     ] {
         let report = measure(delay);
+        assert_output_limits(&report);
+        assert_latency_limits(&report);
         println!(
             "| {:.3} ms | {} | {:.3} ms | {:.3} ms | {:.3} ms | {:.3} ms | {:.3} us | {:.3} us | {:.3} ms | {:.3} us | {:.3} us | {:.3} us | {:.3} us | {:.3} us | {:.3} ms | {} | {} | {} | {} |",
             report.sink_delay.as_secs_f64() * 1_000.0,
