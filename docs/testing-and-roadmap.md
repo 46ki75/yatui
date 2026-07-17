@@ -513,8 +513,12 @@ after every frame; and add complete-turn latency, full-repaint output, peak and
 retained memory, and ArborUI phase evidence. The completed live-ingress slice
 adds accepted and dequeued totals, cumulative and maximum queue latency, exact
 bounded-pressure contracts, terminal-result retry ordering, and an optimized
-Focus Queue burst report across capacities 1, 8, and 64. Finer-grained
-incremental work and slow-sink end-to-end latency remain open.
+Focus Queue burst report across capacities 1, 8, and 64. The completed slow-sink
+slice measures successful send-call start through production-serializer flush
+completion at zero, one, and five milliseconds of imposed sink delay; attributes
+the surrounding runtime phases and output volume; and proves that bounded
+ingress remains observable while a backend write blocks. Finer-grained
+incremental work and tracked regression thresholds remain open.
 
 Deliver:
 

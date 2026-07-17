@@ -427,6 +427,36 @@ commit 14 frames. This evidence selects no new local renderer optimization;
 slow terminal polling and input-to-write-complete latency remain separate open
 measurements.
 
+The slow-sink slice keeps the public application and runtime boundary, uses the
+production Crossterm patch serializer over an instrumented writer, and applies a
+fixed delay once per successful nonempty flush. Each of 64 generation-tagged
+Focus Queue items is admitted and rendered separately so one input has one
+unambiguous output completion. Input-to-write latency begins immediately before
+the successful `EventProxy::send` call and ends when the writer's flush
+completes; it intentionally excludes transactional commit and post-commit
+refresh. One optimized run on 2026-07-17 reported:
+
+| Sink delay | Input-to-write average | p50 | p95 | Maximum | Queue average | Update average | Render average | Instrumented serialize/write average | ANSI bytes | Writer calls | Flushes |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 ms | 0.176 ms | 0.171 ms | 0.260 ms | 0.364 ms | 0.298 us | 0.408 us | 0.193 ms | 0.004 ms | 14302 | 9700 | 64 |
+| 1 ms | 1.256 ms | 1.252 ms | 1.318 ms | 1.332 ms | 0.628 us | 0.859 us | 1.287 ms | 1.064 ms | 14302 | 9700 | 64 |
+| 5 ms | 5.298 ms | 5.288 ms | 5.369 ms | 5.423 ms | 1.147 us | 1.508 us | 5.338 ms | 5.088 ms | 14302 | 9700 | 64 |
+
+The full report also records view construction, reconciliation, layout, paint,
+and diff. All 192 measured updates produce one accepted patch and flush, no full
+repaint, and identical ANSI volume at each delay. The imposed sink delay transfers
+almost one-for-one into write-complete and complete-render latency while queue
+and update time remain in the microsecond range. The instrumented writer locks
+shared counters on each serializer callback, so its baseline is not an
+unmodified production-writer cost; those callbacks are not operating-system
+calls. The deterministic companion test
+blocks one flush, fills the exact two-message ingress capacity from another
+thread, observes `Full` with ownership preserved, then applies the recovered
+message in FIFO order. Existing runtime transaction tests separately prove that
+only a complete `Applied` write commits and that uncertain output forces a full
+repaint. The slow-sink evidence therefore selects no new renderer optimization;
+the synchronous sink itself is the dominant boundary under imposed delay.
+
 `UiTree::prepare_full` preserves a separately callable complete-layout reference.
 The incremental path is checked against it across hand-selected and deterministic
 generated transitions, comparing patches, complete buffers, hit maps, retained
@@ -444,6 +474,7 @@ cargo test -p arborui-test --all-features
 cargo test -p arborui-widgets --all-features
 INSTA_UPDATE=no cargo test -p arborui-example-focus-queue --all-features
 just focus-queue-ingress-metrics
+just focus-queue-slow-sink-metrics
 INSTA_UPDATE=no cargo test -p arborui-example-collection-lab --all-features
 cargo bench -p arborui-example-collection-lab --bench visible_ranges -- --noplot
 just comparison-memory-metrics
@@ -526,7 +557,9 @@ the public application boundary. Its active turns show the same layout-and-paint
 shape as structural overlay work, with paint dominant in the phase report. This
 closes the planned Unicode-heavy evidence slice without changing the renderer;
 the matched resize storm establishes repeated resize churn, and the live-ingress
-probe now measures queue latency under a bounded-depth threaded burst.
+probe now measures queue latency under a bounded-depth threaded burst. The
+slow-sink probe closes the corresponding admission-to-successful-flush evidence
+without identifying a local renderer bottleneck.
 
 ## Limits And Next Evidence
 
@@ -554,6 +587,9 @@ Unicode slice adds combining, wide, joined, flag, variation-selector, and
 ambiguous content at clipping boundaries. The matched resize storms show that
 layout and paint weight varies by workload.
 Live ingress now establishes queue-latency and backpressure costs under the
-measured burst without selecting another local renderer optimization. Slow-sink
-input-to-write latency is the next performance boundary; select and reusable
-table requirements can extend the pilot separately.
+measured burst. Slow-sink evidence establishes that imposed synchronous flush
+delay transfers directly into input-to-write completion while pressure remains
+bounded and observable. Neither slice selects another local renderer
+optimization. Finer-grained incremental work and tracked regression thresholds
+remain open; select and reusable table requirements can extend the pilot
+separately.

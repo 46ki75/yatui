@@ -392,6 +392,12 @@ headless harnesses supply a manual clock through `AppRunner::new_with_clock` so
 dormant futures and future timer deadlines while still reporting queued
 messages, ready tasks, and visual invalidation.
 
+`AppRunner::render_terminal_timed` measures the synchronous
+`TerminalBackend::write_patch` call. For `CrosstermBackend`, that duration
+includes validation, serialization, writer calls, and flush. A successful
+backend return precedes retained-tree and renderer commit; the separate commit
+and post-commit fields therefore are not part of write-complete latency.
+
 Each scheduler turn has a finite work budget. Arrived application messages are
 processed before another bounded group of future polls. Internal and external
 message sources alternate when both remain ready so neither can monopolize the
